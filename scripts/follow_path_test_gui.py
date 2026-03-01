@@ -83,6 +83,14 @@ class FollowPathClient(Node):
         self.world_model_name = self.declare_parameter('world_model_name', "empty").value
         self.record_frequency = self.declare_parameter('record_frequency', 30).value
         self.data_dir = self.declare_parameter('data_dir', '/tmp').value
+        default_controller_ids = ['PP', 'APP', 'RPP', 'DWPP']
+        raw_controller_ids = self.declare_parameter('controller_ids', default_controller_ids).value
+        if isinstance(raw_controller_ids, str):
+            self.controller_ids = [raw_controller_ids]
+        else:
+            self.controller_ids = list(raw_controller_ids)
+        if len(self.controller_ids) == 0:
+            self.controller_ids = default_controller_ids
 
         # --- QoS（RVizに残るように TRANSIENT_LOCAL） ---
         latched_qos = QoSProfile(
@@ -102,23 +110,34 @@ class FollowPathClient(Node):
         # Robot trajectory (subscribe odom -> publish Visualization MarkerArray)
         self._traj_pub = self.create_publisher(MarkerArray, '/viz/robot_trajs', 10)
         # 手法ごとに点列を保持
-        self._traj_points = {
-            'PP':   [],
-            'APP':  [],
-            'RPP':  [],
-            'DWPP': []
-        }
+        self._traj_points = {controller_id: [] for controller_id in self.controller_ids}
         self._active_traj = None          # 現在アクティブな手法名（send_path時に設定）
         self._traj_frame_id = 'odom'
         self._traj_lock = threading.Lock()
 
         # 手法→色マップ（R,G,B）
-        self._traj_colors = {
+        base_color_map = {
             'PP':   (1.0, 0.0, 0.0),   # red
             'APP':  (0.0, 0.7, 0.2),   # green
             'RPP':  (0.0, 0.4, 1.0),   # blue
-            'DWPP': (0.8, 0.2, 0.8)    # purple
+            'DWPP': (0.8, 0.2, 0.8),   # purple
+            'DWVP': (1.0, 0.55, 0.0),  # orange
         }
+        default_palette = [
+            (1.0, 0.0, 0.0),
+            (0.0, 0.7, 0.2),
+            (0.0, 0.4, 1.0),
+            (0.8, 0.2, 0.8),
+            (1.0, 0.55, 0.0),
+            (0.0, 0.8, 0.8),
+            (1.0, 1.0, 0.0),
+            (0.9, 0.4, 0.4),
+        ]
+        self._traj_colors = {}
+        for i, controller_id in enumerate(self.controller_ids):
+            self._traj_colors[controller_id] = base_color_map.get(
+                controller_id, default_palette[i % len(default_palette)]
+            )
 
         # 走行中のみ記録するためのフラグ
         self._recording = False
@@ -343,7 +362,7 @@ class FollowPathClient(Node):
         ma.markers.append(m)
         self._traj_pub.publish(ma)
 
-        self.get_logger().info("Cleared ALL robot trajectories (PP/APP/RPP/DWPP).")
+        self.get_logger().info(f"Cleared ALL robot trajectories ({'/'.join(self.controller_ids)}).")
 
     # ===== Initial pose =====
     def publish_initial_pose(self, x: float = 0.0, y: float = 0.0, yaw_rad: float = 0.0):
@@ -439,6 +458,9 @@ class FollowPathClient(Node):
         goal.goal_checker_id = goal_checker_id
 
         with self._traj_lock:
+            if controller_id not in self._traj_points:
+                self._traj_points[controller_id] = []
+                self._traj_colors[controller_id] = (1.0, 1.0, 1.0)
             self._active_traj = controller_id
             # 手法切替時はその手法の軌跡をクリアして「新しい走行」として描く
             self._traj_points[controller_id] = []
@@ -508,9 +530,10 @@ class AppGUI:
         frm = tk.Frame(self.root); frm.pack(pady=8)
 
         tk.Label(frm, text="Controller:", font=("Arial", 20)).grid(row=0, column=0, sticky="e")
-        self.controller_var = tk.StringVar(value="PP")
+        default_controller = self.node.controller_ids[0] if self.node.controller_ids else "PP"
+        self.controller_var = tk.StringVar(value=default_controller)
         self.controller_cb = ttk.Combobox(frm, textvariable=self.controller_var,
-                                          values=["PP", "APP", "RPP", "DWPP"], state="readonly", width=10, font=("Arial", 20, "bold"))
+                                          values=self.node.controller_ids, state="readonly", width=10, font=("Arial", 20, "bold"))
         self.controller_cb.grid(row=0, column=1, padx=6)
 
         self.goal_checker_id = "general_goal_checker"
