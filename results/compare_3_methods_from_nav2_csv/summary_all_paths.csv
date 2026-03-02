@@ -1,0 +1,9 @@
+Path,Method,Constraint Violation Rate [%],Mean Position Error [m],Max Position Error [m],Mean Heading Error [deg],Travel Time [s]
+path3_right_angle_90_last_heading_minus_pi,DWPP for Diff-drive,0.0000,0.0129,0.0403,14.5873,17.0769
+path3_right_angle_90_last_heading_minus_pi,VP for Omni (min L),100.0000,0.0216,0.1212,24.3623,12.2967
+path3_right_angle_90_last_heading_minus_pi,VP for Omni (max L),100.0000,0.0495,0.1725,16.1407,10.2959
+path3_right_angle_90_last_heading_minus_pi,DWVP for Omni,0.0000,0.0111,0.0443,11.6489,15.0404
+path4_one_minus_cos,DWPP for Diff-drive,0.0000,0.0158,0.0519,9.8858,38.5139
+path4_one_minus_cos,VP for Omni (min L),100.0000,0.0132,0.1170,24.9995,22.9664
+path4_one_minus_cos,VP for Omni (max L),100.0000,0.0352,0.1375,31.6945,18.1754
+path4_one_minus_cos,DWVP for Omni,0.0000,0.0243,0.0714,19.3166,26.0362

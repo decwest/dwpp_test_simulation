@@ -24,14 +24,10 @@ def generate_launch_description() -> LaunchDescription:
     autostart = LaunchConfiguration("autostart")
     use_rviz = LaunchConfiguration("use_rviz")
     rviz_config = LaunchConfiguration("rviz_config")
-    map_frame_id = LaunchConfiguration("map_frame_id")
-    base_frame_id = LaunchConfiguration("base_frame_id")
-    goal_checker_id = LaunchConfiguration("goal_checker_id")
 
     default_params_file = os.path.join(dwpp_test_dir, "params", "hsrb_dwvp_test_params.yaml")
-    default_map_yaml = os.path.join(ytlab_hsr_dir, "maps", "map1.yaml")
-    default_rviz_config = os.path.join(dwpp_test_dir, "rviz", "dwpp_test.rviz")
-    default_data_dir = os.path.join(dwpp_test_dir, "data")
+    default_map_yaml = os.path.join(ytlab_hsr_dir, "maps", "dwvp_exp", "map.yaml")
+    default_rviz_config = os.path.join(dwpp_test_dir, "rviz", "dwvp_hsr_test.rviz")
 
     declare_use_sim_time = DeclareLaunchArgument(
         "use_sim_time",
@@ -68,22 +64,6 @@ def generate_launch_description() -> LaunchDescription:
         default_value=default_rviz_config,
         description="RViz config file",
     )
-    declare_map_frame_id = DeclareLaunchArgument(
-        "map_frame_id",
-        default_value="map",
-        description="Global frame ID",
-    )
-    declare_base_frame_id = DeclareLaunchArgument(
-        "base_frame_id",
-        default_value="base_footprint",
-        description="Robot base frame ID (used by GUI TF lookup)",
-    )
-    declare_goal_checker_id = DeclareLaunchArgument(
-        "goal_checker_id",
-        default_value="general_goal_checker",
-        description="Goal checker ID used in FollowPath goals",
-    )
-
     nav2_navigation = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(hsrb_rosnav_dir, "launch", "navigation_launch.py")),
         launch_arguments={
@@ -107,21 +87,20 @@ def generate_launch_description() -> LaunchDescription:
 
     gui_node = Node(
         package="dwpp_test_simulation",
-        executable="follow_path_test_gui_real.py",
-        name="follow_path_gui_real",
+        executable="follow_path_test_gui.py",
+        name="follow_path_gui",
         output="screen",
         emulate_tty=True,
         parameters=[
             {
                 "use_sim_time": use_sim_time,
+                "robot_model_name": "hsrb",
+                "world_model_name": "default",
                 "nav2_params_file": params_file,
-                "map_frame_id": map_frame_id,
-                "base_frame_id": base_frame_id,
-                "goal_checker_id": goal_checker_id,
-                "data_dir": default_data_dir,
-                "experiment_name": "dwvp_real",
+                "odom_topic": odom_topic,
             }
         ],
+        remappings=[("/cmd_vel", "/omni_base_controller/cmd_vel")],
     )
 
     ld = LaunchDescription()
@@ -132,9 +111,6 @@ def generate_launch_description() -> LaunchDescription:
     ld.add_action(declare_autostart)
     ld.add_action(declare_use_rviz)
     ld.add_action(declare_rviz)
-    ld.add_action(declare_map_frame_id)
-    ld.add_action(declare_base_frame_id)
-    ld.add_action(declare_goal_checker_id)
 
     ld.add_action(nav2_navigation)
     ld.add_action(rviz_node)

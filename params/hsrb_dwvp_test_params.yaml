@@ -6,8 +6,9 @@ controller_server:
     min_y_velocity_threshold: 0.001
     min_theta_velocity_threshold: 0.001
     failure_tolerance: 0.3
+    odom_topic: "/omni_base_controller/wheel_odom"
     progress_checker_plugins: ["progress_checker"]
-    goal_checker_plugins: ["general_goal_checker"] # "precise_goal_checker"
+    goal_checker_plugins: ["general_goal_checker", "dwpp_goal_checker"]
     controller_plugins: ["DWPP", "VPmin", "VPmax", "DWVP"]
     use_realtime_priority: false
     speed_limit_topic: "speed_limit"
@@ -27,7 +28,12 @@ controller_server:
       stateful: False
       plugin: "nav2_controller::SimpleGoalChecker"
       xy_goal_tolerance: 0.1
-      yaw_goal_tolerance: 0.1
+      yaw_goal_tolerance: 0.3
+    dwpp_goal_checker:
+      stateful: False
+      plugin: "nav2_controller::SimpleGoalChecker"
+      xy_goal_tolerance: 0.1
+      yaw_goal_tolerance: 3.14
     DWPP:
       plugin: "nav2_dynamic_window_pure_pursuit_controller::DynamicWindowPurePursuitController"
       max_linear_vel: 0.22 # DWPP parameter
@@ -41,11 +47,11 @@ controller_server:
       enable_csv_logging: true # DWPP parameter
       csv_log_directory: "/home/dev/ros2_ws/src/third_party/dwpp_test_simulation/data"
       csv_filename_prefix: "dwpp_nav2" # DWPP parameter
-      lookahead_dist: 0.22
+      lookahead_dist: 0.11
       min_lookahead_dist: 0.11
       max_lookahead_dist: 0.33
       lookahead_time: 1.5
-      rotate_to_heading_angular_vel: 1.8
+      rotate_to_heading_angular_vel: 0.6
       transform_tolerance: 0.1
       use_velocity_scaled_lookahead_dist: true # use adaptive pure pursuit
       min_approach_linear_velocity: 0.05
@@ -148,7 +154,7 @@ controller_server:
       max_linear_decel: -0.22
       max_angular_accel: 0.6
       max_angular_decel: -0.6
-      lookahead_dist: 0.22
+      lookahead_dist: 0.11
       min_lookahead_dist: 0.11
       max_lookahead_dist: 0.33
       lookahead_time: 1.5
@@ -184,16 +190,57 @@ velocity_smoother:
     min_velocity: [-0.22, -0.22, -0.6]
     max_accel: [0.22, 0.22, 0.6]
     max_decel: [-0.22, -0.22, -0.6]
-    odom_topic: "odom"
+    odom_topic: "/omni_base_controller/wheel_odom"
     odom_duration: 0.1
     deadband_velocity: [0.0, 0.0, 0.0]
     velocity_timeout: 1.0
+
+amcl:
+  ros__parameters:
+    alpha1: 0.05
+    alpha2: 0.05
+    alpha3: 0.05
+    alpha4: 0.05
+    alpha5: 0.05
+    base_frame_id: "base_link"
+    beam_skip_distance: 0.5
+    beam_skip_error_threshold: 0.9
+    beam_skip_threshold: 0.3
+    do_beamskip: false
+    global_frame_id: "map"
+    lambda_short: 0.1
+    laser_likelihood_max_dist: 2.0
+    laser_max_range: 100.0
+    laser_min_range: -1.0
+    laser_model_type: "likelihood_field"
+    max_beams: 60
+    max_particles: 2000
+    min_particles: 500
+    odom_frame_id: "odom"
+    pf_err: 0.05
+    pf_z: 0.99
+    recovery_alpha_fast: 0.0
+    recovery_alpha_slow: 0.0
+    resample_interval: 1
+    robot_model_type: "nav2_amcl::OmniMotionModel"
+    save_pose_rate: 0.5
+    sigma_hit: 0.2
+    tf_broadcast: true
+    transform_tolerance: 1.0
+    introspection_mode: "disabled"
+    update_min_a: 0.05
+    update_min_d: 0.05
+    z_hit: 0.5
+    z_max: 0.05
+    z_rand: 0.5
+    z_short: 0.05
+    scan_topic: /scan
 
 bt_navigator:
   ros__parameters:
     global_frame: map
     robot_base_frame: base_link
-    odom_topic: odom
+    odom_topic: /omni_base_controller/wheel_odom
     bt_loop_duration: 10
     filter_duration: 0.3
     default_server_timeout: 20
@@ -234,11 +281,12 @@ bt_navigator:
       - undock_robot
       - wait
 
+
 local_costmap:
   local_costmap:
     ros__parameters:
-      update_frequency: 20.0
-      publish_frequency: 10.0
+      update_frequency: 5.0
+      publish_frequency: 2.0
       global_frame: odom
       robot_base_frame: base_link
       rolling_window: true
@@ -246,30 +294,96 @@ local_costmap:
       height: 3
       resolution: 0.05
       robot_radius: 0.22
-      plugins: ["inflation_layer"]
+      plugins: ["voxel_layer", "inflation_layer"]
+      filters: ["keepout_filter"]
+      keepout_filter:
+        plugin: "nav2_costmap_2d::KeepoutFilter"
+        enabled: False
+        filter_info_topic: "keepout_costmap_filter_info"
+        override_lethal_cost: True
+        lethal_override_cost: 200
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
         inflation_radius: 0.70
+      voxel_layer:
+        plugin: "nav2_costmap_2d::VoxelLayer"
+        enabled: True
+        publish_voxel_map: True
+        origin_z: 0.0
+        z_resolution: 0.05
+        z_voxels: 16
+        max_obstacle_height: 2.0
+        mark_threshold: 0
+        observation_sources: scan
+        scan:
+          # A relative topic will be appended to the parent of the local_costmap namespace.
+          # For example:
+          #   * User chosen namespace is `tb4`.
+          #   * User chosen topic is `scan`.
+          #   * Topic will be remapped to `/tb4/scan` without `local_costmap`.
+          #   * Use global topic `/scan` if you do not wish the node namespace to apply
+          topic: /scan
+          max_obstacle_height: 2.0
+          clearing: True
+          marking: True
+          data_type: "LaserScan"
+          raytrace_max_range: 3.0
+          raytrace_min_range: 0.0
+          obstacle_max_range: 2.5
+          obstacle_min_range: 0.0
+      static_layer:
+        plugin: "nav2_costmap_2d::StaticLayer"
+        map_subscribe_transient_local: True
       always_send_full_costmap: True
       introspection_mode: "disabled"
 
 global_costmap:
   global_costmap:
     ros__parameters:
-      update_frequency: 20.0
-      publish_frequency: 10.0
+      update_frequency: 1.0
+      publish_frequency: 1.0
       global_frame: map
       robot_base_frame: base_link
       robot_radius: 0.22
       resolution: 0.05
       track_unknown_space: true
-      rolling_window: true
-      width: 20
-      height: 20
-      origin_x: -10.0
-      origin_y: -10.0
-      plugins: ["inflation_layer"]
+      plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
+      filters: ["keepout_filter", "speed_filter"]
+      keepout_filter:
+        plugin: "nav2_costmap_2d::KeepoutFilter"
+        enabled: False
+        filter_info_topic: "keepout_costmap_filter_info"
+        override_lethal_cost: True
+        lethal_override_cost: 200
+      speed_filter:
+        plugin: "nav2_costmap_2d::SpeedFilter"
+        enabled: False
+        filter_info_topic: "speed_costmap_filter_info"
+        speed_limit_topic: "speed_limit"
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: True
+        observation_sources: scan
+        scan:
+          # A relative topic will be appended to the parent of the global_costmap namespace.
+          # For example:
+          #   * User chosen namespace is `tb4`.
+          #   * User chosen topic is `scan`.
+          #   * Topic will be remapped to `/tb4/scan` without `global_costmap`.
+          #   * Use global topic `/scan` if you do not wish the node namespace to apply
+          topic: /scan
+          max_obstacle_height: 2.0
+          clearing: True
+          marking: True
+          data_type: "LaserScan"
+          raytrace_max_range: 3.0
+          raytrace_min_range: 0.0
+          obstacle_max_range: 2.5
+          obstacle_min_range: 0.0
+      static_layer:
+        plugin: "nav2_costmap_2d::StaticLayer"
+        map_subscribe_transient_local: True
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
@@ -277,12 +391,17 @@ global_costmap:
       always_send_full_costmap: True
       introspection_mode: "disabled"
 
+
 # The yaml_filename does not need to be specified since it going to be set by defaults in launch.
 # If you'd rather set it in the yaml, remove the default "map" value in the launch file(s).
 # file & provide full path to map below. If CLI map configuration or launch default is provided, that will be used.
 map_server:
   ros__parameters:
-    # yaml_filename: ""
+    # NOTE:
+    # Keep this key present so launch-side RewrittenYaml can overwrite it
+    # from the `map` launch argument. If omitted, some Nav2 versions leave
+    # `yaml_filename` uninitialized.
+    yaml_filename: "map.yaml"
     introspection_mode: "disabled"
 
 keepout_filter_mask_server:
@@ -380,7 +499,8 @@ behavior_server:
     global_frame: map
     robot_base_frame: base_link
     transform_tolerance: 0.1
-    simulate_ahead_time: 2.0
+    # Disable collision projection during Spin behavior for terminal yaw alignment.
+    simulate_ahead_time: 0.0
     max_rotational_vel: 1.0
     min_rotational_vel: 0.4
     rotational_acc_lim: 3.2
