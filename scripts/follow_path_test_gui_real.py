@@ -28,6 +28,10 @@ import datetime
 import csv
 import os
 import copy
+try:
+    import yaml
+except ImportError:  # pragma: no cover - optional dependency
+    yaml = None
 
 # =========================
 # Third Party Imports
@@ -222,6 +226,19 @@ class FollowPathClient(Node):
         self.map_frame_id = self.declare_parameter("map_frame_id", "map").value
         self.base_frame_id = self.declare_parameter("base_frame_id", "base_footprint").value
         self.experiment_name = self.declare_parameter("experiment_name", "dwpp").value  # dwpp or nelson
+        self.nav2_params_file = self.declare_parameter("nav2_params_file", "").value
+        self.goal_checker_id = self.declare_parameter("goal_checker_id", "general_goal_checker").value
+
+        default_controller_ids = ["DWPP", "VPmin", "VPmax", "DWVP"]
+        raw_controller_ids = self.declare_parameter("controller_ids", []).value
+        if isinstance(raw_controller_ids, str):
+            self.controller_ids = [raw_controller_ids]
+        else:
+            self.controller_ids = list(raw_controller_ids)
+        if len(self.controller_ids) == 0:
+            self.controller_ids = self._load_controller_ids_from_nav2_params(self.nav2_params_file)
+        if len(self.controller_ids) == 0:
+            self.controller_ids = default_controller_ids
 
         # --- Internal State Variables ---
         self._reentrant_group = ReentrantCallbackGroup()
@@ -253,13 +270,32 @@ class FollowPathClient(Node):
         self._reset_record_buffer()
 
         # 軌跡描画用点列（map）
-        self._traj_points = {"PP": [], "APP": [], "RPP": [], "DWPP": []}
-        self._traj_colors = {
+        base_color_map = {
             "PP": (0.0, 0.0, 1.0),
             "APP": (0.0, 0.5, 0.0),
             "RPP": (1.0, 0.647, 0.0),
             "DWPP": (1.0, 0.0, 0.0),
+            "VPmin": (0.1, 0.6, 0.1),
+            "VPmax": (1.0, 0.55, 0.0),
+            "DWVP": (0.7, 0.0, 0.7),
+            "dwpp_omni_clip_min_l": (0.1, 0.6, 0.1),
+            "dwpp_omni_clip_max_l": (1.0, 0.55, 0.0),
+            "dwpp_omni": (0.7, 0.0, 0.7),
         }
+        default_palette = [
+            (0.0, 0.0, 1.0),
+            (0.0, 0.5, 0.0),
+            (1.0, 0.647, 0.0),
+            (1.0, 0.0, 0.0),
+            (0.0, 0.8, 0.8),
+            (1.0, 1.0, 0.0),
+        ]
+        self._traj_points = {controller_id: [] for controller_id in self.controller_ids}
+        self._traj_colors = {}
+        for i, controller_id in enumerate(self.controller_ids):
+            self._traj_colors[controller_id] = base_color_map.get(
+                controller_id, default_palette[i % len(default_palette)]
+            )
 
         # 受信データキャッシュ
         self.current_odom = None
@@ -340,6 +376,63 @@ class FollowPathClient(Node):
             self._trajectory_draw_loop,
             callback_group=self._reentrant_group,
         )
+
+        self.get_logger().info(f"GUI controller_ids: {self.controller_ids}")
+        self.get_logger().info(f"GUI goal_checker_id: {self.goal_checker_id}")
+
+    def _load_controller_ids_from_nav2_params(self, params_file: str):
+        if not params_file:
+            return []
+        if yaml is None:
+            self.get_logger().warn(
+                "PyYAML is not available. Cannot read controller_plugins from nav2_params_file.")
+            return []
+        if not os.path.isfile(params_file):
+            self.get_logger().warn(
+                f"nav2_params_file not found: {params_file}. Falling back to default controller IDs.")
+            return []
+
+        try:
+            with open(params_file, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+        except Exception as e:
+            self.get_logger().warn(
+                f"Failed to parse nav2_params_file '{params_file}': {e}. "
+                "Falling back to default controller IDs.")
+            return []
+
+        def find_controller_plugins(obj):
+            if isinstance(obj, dict):
+                ros_params = obj.get("ros__parameters")
+                if isinstance(ros_params, dict) and "controller_plugins" in ros_params:
+                    return ros_params.get("controller_plugins")
+                for value in obj.values():
+                    found = find_controller_plugins(value)
+                    if found is not None:
+                        return found
+            return None
+
+        plugins = find_controller_plugins(data)
+        if plugins is None:
+            self.get_logger().warn(
+                f"No controller_plugins found in '{params_file}'. Falling back to default controller IDs.")
+            return []
+
+        if isinstance(plugins, str):
+            controller_ids = [plugins]
+        elif isinstance(plugins, (list, tuple)):
+            controller_ids = [str(x) for x in plugins if str(x).strip()]
+        else:
+            controller_ids = []
+
+        if len(controller_ids) == 0:
+            self.get_logger().warn(
+                f"controller_plugins in '{params_file}' is empty. Falling back to default controller IDs.")
+            return []
+
+        self.get_logger().info(
+            f"Loaded controller_ids from nav2_params_file '{params_file}': {controller_ids}")
+        return controller_ids
 
     # =========================================================================
     # Subscriber Callbacks
@@ -881,6 +974,9 @@ class FollowPathClient(Node):
         
         t0 = self.start_origin_t_map
         r0 = self.start_origin_r_map
+        if t0 is None or r0 is None:
+            self._set_start_origin_to_current_robot_pose()
+            return
 
         try:
             local_A, local_B, local_C = self._local_paths
@@ -958,8 +1054,9 @@ class AppGUI:
 
         tk.Label(frm_ctrl, text="Controller:").pack(side=tk.LEFT, padx=5)
 
-        self.controller_var = tk.StringVar(value="PP")
-        controllers = ["PP", "APP", "RPP", "DWPP"]
+        default_controller = self.node.controller_ids[0] if self.node.controller_ids else "DWPP"
+        self.controller_var = tk.StringVar(value=default_controller)
+        controllers = self.node.controller_ids
         cb = ttk.Combobox(
             frm_ctrl,
             textvariable=self.controller_var,
@@ -1017,7 +1114,7 @@ class AppGUI:
 
     def _on_send(self, path_name: str):
         controller_id = self.controller_var.get()
-        goal_checker = "goal_checker"
+        goal_checker = self.node.goal_checker_id
 
         self.node.get_logger().info(f"UI: Send '{path_name}' with '{controller_id}'")
 

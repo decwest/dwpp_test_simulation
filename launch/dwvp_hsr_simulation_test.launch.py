@@ -22,7 +22,6 @@ def generate_launch_description() -> LaunchDescription:
     use_sim_time = LaunchConfiguration('use_sim_time')
     rviz_config = LaunchConfiguration('rviz_config')
     params_file = LaunchConfiguration('params_file')
-    data_dir = LaunchConfiguration('data_dir')
 
     # ====== Declare Arguments ======
     declare_use_sim_time = DeclareLaunchArgument(
@@ -34,12 +33,6 @@ def generate_launch_description() -> LaunchDescription:
         'params_file',
         default_value=default_params_file,
         description='HSRB Nav2 parameters YAML for DWVP validation'
-    )
-
-    declare_data_dir = DeclareLaunchArgument(
-        'data_dir',
-        default_value='/tmp/dwvp_test_simulation_data',
-        description='Directory to save recorded trajectories'
     )
 
     default_rviz = os.path.join(dwpp_test_dir, 'rviz', 'dwpp_test.rviz')
@@ -87,6 +80,7 @@ def generate_launch_description() -> LaunchDescription:
     nav2_navigation = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(dwpp_test_dir, 'launch', 'nav2_bringup.launch.py')),
         launch_arguments={
+            'namespace': '',
             'use_sim_time': use_sim_time,
             'params_file': params_file,
         }.items()
@@ -102,9 +96,7 @@ def generate_launch_description() -> LaunchDescription:
             'use_sim_time': use_sim_time,
             'robot_model_name': 'hsrb',
             'world_model_name': 'default',
-            'record_frequency': 30,
-            'data_dir': data_dir,
-            'controller_ids': ['DWVP'],
+            'nav2_params_file': params_file,
         }],
         remappings=[('/cmd_vel', '/omni_base_controller/cmd_vel')],
     )
@@ -113,7 +105,6 @@ def generate_launch_description() -> LaunchDescription:
     ld = LaunchDescription()
     ld.add_action(declare_use_sim_time)
     ld.add_action(declare_params)
-    ld.add_action(declare_data_dir)
     ld.add_action(declare_rviz)
 
     ld.add_action(hsrb_simulator)

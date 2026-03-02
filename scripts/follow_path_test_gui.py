@@ -2,14 +2,12 @@
 # -*- coding: utf-8 -*-
 
 import math
+import os
 import threading
 import time
 import tkinter as tk
 from tkinter import messagebox, ttk
 import numpy as np
-from scipy.spatial.transform import Rotation as R
-import datetime
-import csv
 
 import rclpy
 from rclpy.node import Node
@@ -18,16 +16,17 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.qos import QoSProfile, QoSHistoryPolicy, QoSReliabilityPolicy, QoSDurabilityPolicy
 from rclpy.qos import qos_profile_sensor_data
 
-from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist
+from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Point
 from nav_msgs.msg import Path, Odometry
 from nav2_msgs.action import FollowPath
 from visualization_msgs.msg import Marker, MarkerArray
-from std_msgs.msg import Bool
 
 from ros_gz_interfaces.srv import SetEntityPose  # Gazebo Sim (Ignition) の set_pose サービス
 
-import os
-from ament_index_python.packages import get_package_share_directory
+try:
+    import yaml
+except ImportError:  # pragma: no cover - runtime dependency check
+    yaml = None
 
 
 def yaw_to_quat(z_yaw_rad: float):
@@ -37,38 +36,162 @@ def yaw_to_quat(z_yaw_rad: float):
     return (0.0, 0.0, qz, qw)
 
 
+def append_heading_to_path(path_xy: np.ndarray) -> np.ndarray:
+    if len(path_xy) == 0:
+        return np.empty((0, 3), dtype=float)
+    if len(path_xy) == 1:
+        return np.array([[path_xy[0, 0], path_xy[0, 1], 0.0]], dtype=float)
+
+    diffs = np.diff(path_xy, axis=0)
+    headings = np.arctan2(diffs[:, 1], diffs[:, 0])
+    headings = np.concatenate([headings, [headings[-1]]])
+    return np.c_[path_xy, headings]
+
+
+def right_angle_polyline_curve(segment_length: float = 1.0, points_per_segment: int = 100) -> np.ndarray:
+    if points_per_segment <= 0:
+        raise ValueError("points_per_segment must be > 0")
+    if segment_length <= 0.0:
+        raise ValueError("segment_length must be > 0")
+
+    x1 = np.linspace(0.0, segment_length, points_per_segment + 1)
+    y1 = np.zeros_like(x1)
+    x2 = np.full(points_per_segment + 1, segment_length)
+    y2 = np.linspace(0.0, segment_length, points_per_segment + 1)
+
+    # Remove duplicate corner point
+    x = np.concatenate([x1, x2[1:]])
+    y = np.concatenate([y1, y2[1:]])
+    return append_heading_to_path(np.c_[x, y])
+
+
+def right_angle_polyline_curve_last_segment_heading_minus_pi(
+    segment_length: float = 1.0,
+    points_per_segment: int = 100,
+) -> np.ndarray:
+    path = right_angle_polyline_curve(
+        segment_length=segment_length,
+        points_per_segment=points_per_segment,
+    ).copy()
+    path[-1, 2] = -np.pi
+    return path
+
+
+def _resample_xy_by_arclength(x: np.ndarray, y: np.ndarray, num_points: int) -> tuple[np.ndarray, np.ndarray]:
+    if num_points < 2:
+        raise ValueError("num_points must be >= 2")
+
+    dx = np.diff(x)
+    dy = np.diff(y)
+    ds = np.hypot(dx, dy)
+    s = np.concatenate([[0.0], np.cumsum(ds)])
+    total_length = float(s[-1])
+
+    if total_length <= 1e-12:
+        return (
+            np.linspace(float(x[0]), float(x[-1]), num_points),
+            np.linspace(float(y[0]), float(y[-1]), num_points),
+        )
+
+    s_new = np.linspace(0.0, total_length, num_points)
+    x_new = np.interp(s_new, s, x)
+    y_new = np.interp(s_new, s, y)
+    return x_new, y_new
+
+
+def one_minus_cos_curve(
+    amplitude: float = 1.0,
+    length_x: float = 2.0,
+    num_points: int = 501,
+    cycles: float = 1.5,
+    x0: float = 0.0,
+    y0: float = 0.0,
+    theta0: float = 0.0,
+    resample_arclength: bool = True,
+) -> np.ndarray:
+    if num_points < 2:
+        raise ValueError("num_points must be >= 2")
+    if length_x <= 0.0:
+        raise ValueError("length_x must be > 0")
+
+    a = float(amplitude)
+    l = float(length_x)
+    k = 2.0 * math.pi * float(cycles) / l
+
+    x = np.linspace(float(x0), float(x0) + l, num_points, dtype=float)
+    u = x - float(x0)
+    y = float(y0) + a * (1.0 - np.cos(k * u))
+
+    if abs(theta0) > 0.0:
+        c = math.cos(theta0)
+        s = math.sin(theta0)
+        x_shift = x - float(x0)
+        y_shift = y - float(y0)
+        x = float(x0) + c * x_shift - s * y_shift
+        y = float(y0) + s * x_shift + c * y_shift
+
+    if resample_arclength:
+        x, y = _resample_xy_by_arclength(x, y, num_points)
+
+    dx = np.gradient(x)
+    dy = np.gradient(y)
+    theta = np.arctan2(dy, dx)
+    return np.c_[x, y, theta]
+
+
+def path_array_to_msg(path_xyz: np.ndarray, frame_id: str) -> Path:
+    path = Path()
+    path.header.frame_id = frame_id
+    for x, y, yaw in path_xyz:
+        ps = PoseStamped()
+        ps.header.frame_id = frame_id
+        ps.pose.position.x = float(x)
+        ps.pose.position.y = float(y)
+        _, _, qz, qw = yaw_to_quat(float(yaw))
+        ps.pose.orientation.z = qz
+        ps.pose.orientation.w = qw
+        path.poses.append(ps)
+    return path
+
+
 def make_path(frame_id: str):
-    paths = []
-    theta_list = [np.pi/4, np.pi/2, 3*np.pi/4]
+    paths_dict = {}
+
+    # Existing 3 paths used in the GUI
+    theta_list = [np.pi / 4, np.pi / 2, 3 * np.pi / 4]
+    names = ["Path A (45 deg)", "Path B (90 deg)", "Path C (135 deg)"]
     l = 3.0
 
-    for theta in theta_list:
-        x1 = np.linspace(0, 1, 100);           y1 = np.zeros_like(x1)
-        x2 = np.linspace(1.0, 1.0+l*math.cos(theta), 100)
-        y2 = np.linspace(0.0, l*math.sin(theta), 100)
-        x3 = np.linspace(1.0+l*math.cos(theta), 4.0+l*math.cos(theta), 100)
+    for name, theta in zip(names, theta_list):
+        x1 = np.linspace(0, 1, 100)
+        y1 = np.zeros_like(x1)
+        x2 = np.linspace(1.0, 1.0 + l * math.cos(theta), 100)
+        y2 = np.linspace(0.0, l * math.sin(theta), 100)
+        x3 = np.linspace(1.0 + l * math.cos(theta), 4.0 + l * math.cos(theta), 100)
         y3 = np.ones_like(x3) * l * math.sin(theta)
 
         xs = np.concatenate([x1, x2, x3])
         ys = np.concatenate([y1, y2, y3])
-        dx = np.gradient(xs); dy = np.gradient(ys)
-        yaws = np.unwrap(np.arctan2(dy, dx))
+        path_xyz = append_heading_to_path(np.c_[xs, ys])
+        paths_dict[name] = path_array_to_msg(path_xyz, frame_id)
 
-        path = Path()
-        path.header.frame_id = frame_id
-        for x, y, yaw in zip(xs, ys, yaws):
-            ps = PoseStamped()
-            ps.header.frame_id = frame_id
-            ps.pose.position.x = float(x)
-            ps.pose.position.y = float(y)
-            _, _, qz, qw = yaw_to_quat(yaw)
-            ps.pose.orientation.z = qz
-            ps.pose.orientation.w = qw
-            path.poses.append(ps)
-        paths.append(path)
+    # Paths used in benchmark_compare_three_methods.py
+    path3_xyz = right_angle_polyline_curve_last_segment_heading_minus_pi(
+        segment_length=1.0,
+        points_per_segment=100,
+    )
+    paths_dict["path3_right_angle_90_last_heading_minus_pi"] = path_array_to_msg(path3_xyz, frame_id)
 
-    path_A, path_B, path_C = paths
-    return (path_A, path_B, path_C)
+    path4_xyz = one_minus_cos_curve(
+        amplitude=1.0,
+        length_x=2.0,
+        num_points=501,
+        cycles=1.5,
+        resample_arclength=True,
+    )
+    paths_dict["path4_one_minus_cos"] = path_array_to_msg(path4_xyz, frame_id)
+
+    return paths_dict
 
 
 class FollowPathClient(Node):
@@ -77,20 +200,38 @@ class FollowPathClient(Node):
         self._client = ActionClient(self, FollowPath, '/follow_path')
         self._current_goal_handle = None
         self._frame_id = frame_id
+
+        # Visualization tuning parameters
+        self._ref_path_line_width = 0.06
+        self._ref_path_arrow_stride = 30
+        self._ref_path_arrow_len_idx = 8
+        self._ref_path_arrow_shaft_diameter = 0.045
+        self._ref_path_arrow_head_diameter = 0.11
+        self._ref_path_arrow_head_length = 0.17
+        self._traj_line_width = 0.05
+        self._traj_arrow_shaft_diameter = 0.07
+        self._traj_arrow_head_diameter = 0.14
+        self._traj_arrow_head_length = 0.20
+        self._traj_arrow_tail_back_idx = 6
         
         # parameters
         self.robot_model_name = self.declare_parameter('robot_model_name', "turtlebot3_waffle").value
         self.world_model_name = self.declare_parameter('world_model_name', "empty").value
-        self.record_frequency = self.declare_parameter('record_frequency', 30).value
-        self.data_dir = self.declare_parameter('data_dir', '/tmp').value
+        self.nav2_params_file = self.declare_parameter('nav2_params_file', "").value
+
         default_controller_ids = ['PP', 'APP', 'RPP', 'DWPP']
-        raw_controller_ids = self.declare_parameter('controller_ids', default_controller_ids).value
+        raw_controller_ids = self.declare_parameter('controller_ids', []).value
         if isinstance(raw_controller_ids, str):
             self.controller_ids = [raw_controller_ids]
         else:
             self.controller_ids = list(raw_controller_ids)
+
+        if len(self.controller_ids) == 0:
+            self.controller_ids = self._load_controller_ids_from_nav2_params(self.nav2_params_file)
         if len(self.controller_ids) == 0:
             self.controller_ids = default_controller_ids
+
+        self.get_logger().info(f"GUI controller_ids: {self.controller_ids}")
 
         # --- QoS（RVizに残るように TRANSIENT_LOCAL） ---
         latched_qos = QoSProfile(
@@ -145,15 +286,6 @@ class FollowPathClient(Node):
         # /odom 購読（SensorData QoS）
         self.current_odom = None
         self._odom_sub = self.create_subscription(Odometry, '/odom', self._on_odom, qos_profile_sensor_data)
-        # control serverが出力する速度指令値の保存用
-        self.current_cmd_vel_nav = None
-        self._cmd_vel_nav_sub = self.create_subscription(Twist, '/cmd_vel_nav', self._cmd_vel_nav_callback, 1)
-        # Nav2が出力する速度指令地の保存用
-        self.current_cmd_vel = None
-        self._cmd_vel_sub = self.create_subscription(Twist, '/cmd_vel', self._cmd_vel_callback, 1)
-        # 速度違反フラグの保存用
-        self.current_velocity_violation = False
-        self._velocity_violation_sub = self.create_subscription(Bool, '/constraints_violation_flag', self._velocity_violation_callback, 1)
 
         # Gazebo warp clients
         self._gz_setpose_cli = None  # /world/<world>/set_pose 用
@@ -162,137 +294,161 @@ class FollowPathClient(Node):
         threading.Thread(target=self._auto_publish_initial_pose, daemon=True).start()
         threading.Thread(target=self._auto_warp, daemon=True).start()
         threading.Thread(target=self._periodic_path_publish, daemon=True).start()
-        # 記録用のタイマー割込み
-        self.record_rate = self.create_rate(self.record_frequency)  # 30 Hz
-        threading.Thread(target=self._recording_timer_callback, daemon=True).start()
 
-    def _velocity_violation_callback(self, msg: Bool):
-        self.current_velocity_violation = msg.data
+    def _load_controller_ids_from_nav2_params(self, params_file: str):
+        if not params_file:
+            return []
+        if yaml is None:
+            self.get_logger().warn(
+                "PyYAML is not available. Cannot read controller_plugins from nav2_params_file.")
+            return []
+        if not os.path.isfile(params_file):
+            self.get_logger().warn(
+                f"nav2_params_file not found: {params_file}. Falling back to default controller IDs.")
+            return []
 
-    def _cmd_vel_nav_callback(self, msg: Twist):
-        self.current_cmd_vel_nav = msg
+        try:
+            with open(params_file, 'r', encoding='utf-8') as f:
+                data = yaml.safe_load(f) or {}
+        except Exception as e:
+            self.get_logger().warn(
+                f"Failed to parse nav2_params_file '{params_file}': {e}. "
+                "Falling back to default controller IDs.")
+            return []
 
-    def _cmd_vel_callback(self, msg: Twist):
-        self.current_cmd_vel = msg
+        def find_controller_plugins(obj):
+            if isinstance(obj, dict):
+                ros_params = obj.get('ros__parameters')
+                if isinstance(ros_params, dict) and 'controller_plugins' in ros_params:
+                    return ros_params.get('controller_plugins')
+                for value in obj.values():
+                    found = find_controller_plugins(value)
+                    if found is not None:
+                        return found
+            return None
 
-    def _recording_timer_callback(self):
-        self.record_state_dict = {"t": [], "x": [], "y": [], "yaw": [], "v": [], "w": [], "v_cmd": [], "w_cmd": [], "v_nav": [], "w_nav": [], "velocity_violation": []}
-        while rclpy.ok():
-            # aaa
-            if  self.current_cmd_vel_nav is None or self.current_cmd_vel is None or self.current_odom is None:
-                continue
-            
-            if self._recording:
-                # self.get_logger().info(f"Now recording {self._active_traj} trajectory...")
-                
-                # actual position
-                x = self.current_odom.pose.pose.position.x
-                y = self.current_odom.pose.pose.position.y
-                
-                qx = self.current_odom.pose.pose.orientation.x
-                qy = self.current_odom.pose.pose.orientation.y
-                qz = self.current_odom.pose.pose.orientation.z
-                qw = self.current_odom.pose.pose.orientation.w
-                r = R.from_quat([qx, qy, qz, qw])
-                yaw = r.as_euler('xyz')[2]
-                
-                # actual velocity
-                v = self.current_odom.twist.twist.linear.x
-                w = self.current_odom.twist.twist.angular.z
-                
-                # commanded velocity from control server
-                v_cmd = self.current_cmd_vel_nav.linear.x
-                w_cmd = self.current_cmd_vel_nav.angular.z
-                
-                # commanded velocity from Nav2
-                v_nav = self.current_cmd_vel.linear.x
-                w_nav = self.current_cmd_vel.angular.z
-                
-                velocity_violation = self.current_velocity_violation
-                
-                # print(self.get_clock().now().to_msg().sec + self.get_clock().now().to_msg().nanosec * 1e-9)
-                self.record_state_dict["t"].append(self.get_clock().now().to_msg().sec + self.get_clock().now().to_msg().nanosec * 1e-9)
-                self.record_state_dict["x"].append(x)
-                self.record_state_dict["y"].append(y)
-                self.record_state_dict["yaw"].append(yaw)
-                self.record_state_dict["v"].append(v)
-                self.record_state_dict["w"].append(w)
-                self.record_state_dict["v_cmd"].append(v_cmd)
-                self.record_state_dict["w_cmd"].append(w_cmd)
-                self.record_state_dict["v_nav"].append(v_nav)
-                self.record_state_dict["w_nav"].append(w_nav)
-                self.record_state_dict["velocity_violation"].append(velocity_violation)
-                
-            else:
-                # 保存データがあるなら
-                if len(self.record_state_dict["x"]) > 0:
-                    # save to csv file
-                    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                    dir_name = f"{self.data_dir}/{self.robot_model_name}"
-                    filename = f"{dir_name}/{self._active_traj}_{timestamp}.csv"
-                    if os.path.exists(dir_name) == False:
-                        os.makedirs(dir_name, exist_ok=True)
-                    with open(filename, 'w', newline='') as csvfile:
-                        fieldnames = ["t", "x", "y", "yaw", "v", "w", "v_cmd", "w_cmd", "v_nav", "w_nav", "velocity_violation"]
-                        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-                        writer.writeheader()
-                        for i in range(len(self.record_state_dict["x"])):
-                            writer.writerow({field: self.record_state_dict[field][i] for field in fieldnames})
-                    self.get_logger().info(f"Saved trajectory data to '{filename}'")
-                    
-                    # clear the record
-                    self.record_state_dict = {"t": [], "x": [], "y": [], "yaw": [], "v": [], "w": [], "v_cmd": [], "w_cmd": [], "v_nav": [], "w_nav": [], "velocity_violation": []}
-                
-            self.record_rate.sleep()
+        plugins = find_controller_plugins(data)
+        if plugins is None:
+            self.get_logger().warn(
+                f"No controller_plugins found in '{params_file}'. Falling back to default controller IDs.")
+            return []
+
+        if isinstance(plugins, str):
+            controller_ids = [plugins]
+        elif isinstance(plugins, (list, tuple)):
+            controller_ids = [str(x) for x in plugins if str(x).strip()]
+        else:
+            controller_ids = []
+
+        if len(controller_ids) == 0:
+            self.get_logger().warn(
+                f"controller_plugins in '{params_file}' is empty. Falling back to default controller IDs.")
+            return []
+
+        self.get_logger().info(
+            f"Loaded controller_ids from nav2_params_file '{params_file}': {controller_ids}")
+        return controller_ids
 
     # ===== RViz 可視化：パス & ラベル =====
-    def publish_paths_and_labels(self, path_A: Path, path_B: Path, path_C: Path):
-        # Path visualization markers with different colors
+    def publish_paths_and_labels(self, paths_dict: dict[str, Path]):
+        # Path visualization markers with distinct colors
         markers = MarkerArray()
-        colors = [(1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)]  # Red, Green, Blue
-        paths = [('Path A', path_A), ('Path B', path_B), ('Path C', path_C)]
         now = self.get_clock().now().to_msg()
+        palette = [
+            (1.0, 0.0, 0.0),   # red
+            (0.0, 1.0, 0.0),   # green
+            (0.0, 0.0, 1.0),   # blue
+            (1.0, 0.55, 0.0),  # orange
+            (1.0, 1.0, 0.0),   # yellow
+            (0.0, 1.0, 1.0),   # cyan
+            (1.0, 0.0, 1.0),   # magenta
+        ]
 
-        for mid, ((name, path), color) in enumerate(zip(paths, colors)):
+        clear_marker = Marker()
+        clear_marker.action = Marker.DELETEALL
+        markers.markers.append(clear_marker)
+
+        marker_id = 0
+        for idx, (name, path) in enumerate(paths_dict.items()):
             if not path.poses:
                 continue
 
-            marker = Marker()
-            marker.header.frame_id = path.header.frame_id
-            marker.header.stamp = now
-            marker.ns = 'path_visualization'
-            marker.id = mid
-            marker.type = Marker.LINE_STRIP
-            marker.action = Marker.ADD
-            marker.scale.x = 0.05  # Line width
-            marker.color.r = color[0]
-            marker.color.g = color[1]
-            marker.color.b = color[2]
-            marker.color.a = 1.0
-
+            color = palette[idx % len(palette)]
+            line = Marker()
+            line.header.frame_id = path.header.frame_id
+            line.header.stamp = now
+            line.ns = 'path_visualization'
+            line.id = marker_id
+            marker_id += 1
+            line.type = Marker.LINE_STRIP
+            line.action = Marker.ADD
+            line.scale.x = self._ref_path_line_width
+            line.color.r = color[0]
+            line.color.g = color[1]
+            line.color.b = color[2]
+            line.color.a = 1.0
             for pose_stamped in path.poses:
-                marker.points.append(pose_stamped.pose.position)
+                line.points.append(pose_stamped.pose.position)
+            markers.markers.append(line)
 
-            markers.markers.append(marker)
+            # Add direction arrows on reference path for better visibility
+            if len(path.poses) >= 2:
+                for i in range(0, len(path.poses) - 1, self._ref_path_arrow_stride):
+                    j = min(i + self._ref_path_arrow_len_idx, len(path.poses) - 1)
+                    start = path.poses[i].pose.position
+                    end = path.poses[j].pose.position
+                    dx = end.x - start.x
+                    dy = end.y - start.y
+                    if (dx * dx + dy * dy) < 1e-8:
+                        continue
+
+                    arrow = Marker()
+                    arrow.header.frame_id = path.header.frame_id
+                    arrow.header.stamp = now
+                    arrow.ns = 'path_visualization'
+                    arrow.id = marker_id
+                    marker_id += 1
+                    arrow.type = Marker.ARROW
+                    arrow.action = Marker.ADD
+                    arrow.scale.x = self._ref_path_arrow_shaft_diameter
+                    arrow.scale.y = self._ref_path_arrow_head_diameter
+                    arrow.scale.z = self._ref_path_arrow_head_length
+                    arrow.color.r = color[0]
+                    arrow.color.g = color[1]
+                    arrow.color.b = color[2]
+                    arrow.color.a = 0.95
+                    arrow.points = [
+                        Point(x=float(start.x), y=float(start.y), z=float(start.z + 0.02)),
+                        Point(x=float(end.x), y=float(end.y), z=float(end.z + 0.02)),
+                    ]
+                    markers.markers.append(arrow)
 
         self._path_markers_pub.publish(markers)
 
         # Labels (TEXT_VIEW_FACING)
         labels = MarkerArray()
-        for mid, (name, p) in enumerate([('PathA', path_A), ('PathB', path_B), ('PathC', path_C)], start=1):
+        clear_labels = Marker()
+        clear_labels.action = Marker.DELETEALL
+        labels.markers.append(clear_labels)
+
+        for mid, (name, path) in enumerate(paths_dict.items(), start=1):
+            if not path.poses:
+                continue
             m = Marker()
-            m.header.frame_id = p.header.frame_id
+            m.header.frame_id = path.header.frame_id
             m.header.stamp = now
             m.ns = 'path_labels'
             m.id = mid
             m.type = Marker.TEXT_VIEW_FACING
             m.action = Marker.ADD
-            if p.poses:
-                m.pose.position.x = p.poses[-1].pose.position.x + 0.1
-                m.pose.position.y = p.poses[-1].pose.position.y + 0.1
-            m.pose.position.z = 0.3
-            m.scale.z = 0.25
-            m.color.r = 1.0; m.color.g = 1.0; m.color.b = 1.0; m.color.a = 1.0
+            m.pose.position.x = path.poses[-1].pose.position.x + 0.1
+            m.pose.position.y = path.poses[-1].pose.position.y + 0.1 + 0.08 * (mid - 1)
+            m.pose.position.z = 0.35
+            m.scale.z = 0.2
+            m.color.r = 1.0
+            m.color.g = 1.0
+            m.color.b = 1.0
+            m.color.a = 1.0
             m.text = name
             labels.markers.append(m)
         self._label_pub.publish(labels)
@@ -339,10 +495,34 @@ class FollowPathClient(Node):
                 m.id = mid; mid += 1
                 m.type = Marker.LINE_STRIP
                 m.action = Marker.ADD
-                m.scale.x = 0.035
+                m.scale.x = self._traj_line_width
                 m.color.r = r; m.color.g = g; m.color.b = b; m.color.a = 0.95
                 m.points = points.copy()
                 marr.markers.append(m)
+
+                # Add a larger heading arrow at the current trajectory end
+                tail_idx = max(0, len(points) - 1 - self._traj_arrow_tail_back_idx)
+                tail = points[tail_idx]
+                head = points[-1]
+                dx = head.x - tail.x
+                dy = head.y - tail.y
+                if (dx * dx + dy * dy) >= 1e-8:
+                    a = Marker()
+                    a.header.frame_id = self._traj_frame_id
+                    a.header.stamp = now
+                    a.ns = 'robot_trajectory'
+                    a.id = 1000 + mid; mid += 1
+                    a.type = Marker.ARROW
+                    a.action = Marker.ADD
+                    a.scale.x = self._traj_arrow_shaft_diameter
+                    a.scale.y = self._traj_arrow_head_diameter
+                    a.scale.z = self._traj_arrow_head_length
+                    a.color.r = r; a.color.g = g; a.color.b = b; a.color.a = 1.0
+                    a.points = [
+                        Point(x=float(tail.x), y=float(tail.y), z=float(tail.z + 0.02)),
+                        Point(x=float(head.x), y=float(head.y), z=float(head.z + 0.02)),
+                    ]
+                    marr.markers.append(a)
 
             self._traj_pub.publish(marr)
 
@@ -438,10 +618,10 @@ class FollowPathClient(Node):
 
     def _periodic_path_publish(self):
         time.sleep(2.0)  # 初期化待ち
-        path_A, path_B, path_C = make_path(self._frame_id)
+        paths_dict = make_path(self._frame_id)
         while rclpy.ok():
             try:
-                self.publish_paths_and_labels(path_A, path_B, path_C)
+                self.publish_paths_and_labels(paths_dict)
                 time.sleep(1.0)
             except Exception as e:
                 self.get_logger().warn(f"Periodic path publish failed: {e}")
@@ -516,7 +696,7 @@ class AppGUI:
 
         self.root = tk.Tk()
         self.root.title("FollowPath GUI (Nav2)")
-        self.root.geometry("800x400")
+        self.root.geometry("960x540")
         
         self.robot_model_name = self.node.robot_model_name
         self.world_model_name = self.node.world_model_name
@@ -547,17 +727,13 @@ class AppGUI:
         btns = tk.Frame(self.root); btns.pack()
 
         for i, name in enumerate(self.paths_dict.keys()):
-            tk.Button(btns, text=name, width=20, font=("Arial", 20, "bold"),
-                      command=lambda n=name: self._on_send(n)).grid(row=i // 2, column=i % 2, padx=8, pady=8)
+            tk.Button(btns, text=name, width=34, font=("Arial", 14, "bold"),
+                      command=lambda n=name: self._on_send(n)).grid(row=i, column=0, padx=8, pady=6, sticky="ew")
 
         tk.Button(self.root, text="Cancel", font=("Arial", 20, "bold"), command=self._on_cancel).pack(pady=(12, 8))
 
         # 初回：PathとラベルをPublish
-        self.node.publish_paths_and_labels(
-            self.paths_dict["Path A (45 deg)"],
-            self.paths_dict["Path B (90 deg)"],
-            self.paths_dict["Path C (135 deg)"],
-        )
+        self.node.publish_paths_and_labels(self.paths_dict)
 
     def _on_set_initial_pose(self):
         try:
@@ -599,14 +775,7 @@ def main():
     rclpy.init()
 
     frame_id = "map"
-    world_name = "empty"
-    path_A, path_B, path_C = make_path(frame_id)
-
-    paths = {
-        "Path A (45 deg)": path_A,
-        "Path B (90 deg)": path_B,
-        "Path C (135 deg)": path_C,
-    }
+    paths = make_path(frame_id)
 
     node = FollowPathClient(frame_id=frame_id)
     # === 安全な executor / spin ===

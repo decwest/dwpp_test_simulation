@@ -157,7 +157,10 @@ def generate_launch_description() -> LaunchDescription:
             name='follow_path_gui',
             output='screen',
             emulate_tty=True,
-            parameters=[{'use_sim_time': use_sim_time}]
+            parameters=[{
+                'use_sim_time': use_sim_time,
+                'nav2_params_file': params_file,
+            }]
         )
 
     # ====== LaunchDescription ======

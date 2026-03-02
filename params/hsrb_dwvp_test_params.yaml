@@ -1,6 +1,6 @@
 controller_server:
   ros__parameters:
-    controller_frequency: 20.0
+    controller_frequency: 30.0
     costmap_update_timeout: 10.0
     min_x_velocity_threshold: 0.001
     min_y_velocity_threshold: 0.001
@@ -8,7 +8,7 @@ controller_server:
     failure_tolerance: 0.3
     progress_checker_plugins: ["progress_checker"]
     goal_checker_plugins: ["general_goal_checker"] # "precise_goal_checker"
-    controller_plugins: ["DWVP"]
+    controller_plugins: ["DWPP", "VPmin", "VPmax", "DWVP"]
     use_realtime_priority: false
     speed_limit_topic: "speed_limit"
 
@@ -24,54 +24,166 @@ controller_server:
     #  yaw_goal_tolerance: 0.25
     #  stateful: True
     general_goal_checker:
-      stateful: True
+      stateful: False
       plugin: "nav2_controller::SimpleGoalChecker"
-      xy_goal_tolerance: 0.05
-      yaw_goal_tolerance: 0.05
-    DWVP:
+      xy_goal_tolerance: 0.1
+      yaw_goal_tolerance: 0.1
+    DWPP:
+      plugin: "nav2_dynamic_window_pure_pursuit_controller::DynamicWindowPurePursuitController"
+      max_linear_vel: 0.22 # DWPP parameter
+      min_linear_vel: 0.0 # DWPP parameter
+      max_angular_vel: 0.6 # DWPP parameter
+      min_angular_vel: -0.6 # DWPP parameter
+      max_linear_accel: 0.22 # DWPP parameter
+      max_linear_decel: -0.22 # DWPP parameter
+      max_angular_accel: 0.6 # DWPP parameter
+      max_angular_decel: -0.6 # DWPP parameter
+      enable_csv_logging: true # DWPP parameter
+      csv_log_directory: "/home/dev/ros2_ws/src/third_party/dwpp_test_simulation/data"
+      csv_filename_prefix: "dwpp_nav2" # DWPP parameter
+      lookahead_dist: 0.22
+      min_lookahead_dist: 0.11
+      max_lookahead_dist: 0.33
+      lookahead_time: 1.5
+      rotate_to_heading_angular_vel: 1.8
+      transform_tolerance: 0.1
+      use_velocity_scaled_lookahead_dist: true # use adaptive pure pursuit
+      min_approach_linear_velocity: 0.05
+      approach_velocity_scaling_dist: 0.6
+      max_allowed_time_to_collision_up_to_carrot: 1.0
+      use_collision_detection: false
+      use_regulated_linear_velocity_scaling: false # use regulated pure pursuit
+      use_cost_regulated_linear_velocity_scaling: false # use regulated pure pursuit
+      cost_scaling_dist: 0.6
+      cost_scaling_gain: 1.0
+      inflation_cost_scaling_factor: 3.0
+      regulated_linear_scaling_min_radius: 0.9
+      regulated_linear_scaling_min_speed: 0.25
+      use_rotate_to_heading: true
+      rotate_to_heading_min_angle: 3.14 # OFF since DWPP can handle steep curvature
+      allow_reversing: false
+      use_interpolation: true
+    VPmin:
       plugin: "nav2_dynamic_window_vector_pursuit_controller::DynamicWindowVectorPursuitController"
       # Base RPP parameters (still required by inherited infrastructure)
       max_linear_vel: 0.22
       min_linear_vel: -0.22
-      max_angular_vel: 0.5
-      min_angular_vel: -0.5
-      max_linear_accel: 0.5
-      max_linear_decel: -0.5
-      max_angular_accel: 0.5
-      max_angular_decel: -0.5
-      lookahead_dist: 0.22
-      min_lookahead_dist: 0.22
-      max_lookahead_dist: 0.44
-      lookahead_time: 2.0
+      max_angular_vel: 0.6
+      min_angular_vel: -0.6
+      max_linear_accel: 0.22
+      max_linear_decel: -0.22
+      max_angular_accel: 0.6
+      max_angular_decel: -0.6
+      lookahead_dist: 0.11
+      min_lookahead_dist: 0.11
+      max_lookahead_dist: 0.33
+      lookahead_time: 1.5
       transform_tolerance: 0.1
-      use_velocity_scaled_lookahead_dist: true
-      use_collision_detection: true
-      stateful: true
+      use_velocity_scaled_lookahead_dist: false
+      use_collision_detection: false
+      stateful: false
       # DWVP-specific parameters
       max_vel_x: 0.22
       min_vel_x: -0.22
       max_vel_y: 0.22
       min_vel_y: -0.22
-      max_vel_theta: 0.5
-      min_vel_theta: -0.5
-      max_accel_x: 0.5
-      max_accel_y: 0.5
-      max_accel_theta: 0.5
+      max_vel_theta: 0.6
+      min_vel_theta: -0.6
+      max_accel_x: 0.22
+      max_accel_y: 0.22
+      max_accel_theta: 0.6
+      orientation_time_weight: 1.0
+      min_orientation_time: 0.2
+      velocity_feedback: "OPEN_LOOP"
+      use_dynamic_window_vector_pursuit: false
+      use_collision_detection_for_omni: false
+      enable_csv_logging: true
+      csv_log_directory: "/home/dev/ros2_ws/src/third_party/dwpp_test_simulation/data"
+      csv_filename_prefix: "vpmin_nav2"
+    VPmax:
+      plugin: "nav2_dynamic_window_vector_pursuit_controller::DynamicWindowVectorPursuitController"
+      # Base RPP parameters (still required by inherited infrastructure)
+      max_linear_vel: 0.22
+      min_linear_vel: -0.22
+      max_angular_vel: 0.6
+      min_angular_vel: -0.6
+      max_linear_accel: 0.22
+      max_linear_decel: -0.22
+      max_angular_accel: 0.6
+      max_angular_decel: -0.6
+      lookahead_dist: 0.33
+      min_lookahead_dist: 0.11
+      max_lookahead_dist: 0.33
+      lookahead_time: 1.5
+      transform_tolerance: 0.1
+      use_velocity_scaled_lookahead_dist: false
+      use_collision_detection: false
+      stateful: false
+      # DWVP-specific parameters
+      max_vel_x: 0.22
+      min_vel_x: -0.22
+      max_vel_y: 0.22
+      min_vel_y: -0.22
+      max_vel_theta: 0.6
+      min_vel_theta: -0.6
+      max_accel_x: 0.22
+      max_accel_y: 0.22
+      max_accel_theta: 0.6
+      orientation_time_weight: 1.0
+      min_orientation_time: 0.2
+      velocity_feedback: "OPEN_LOOP"
+      use_dynamic_window_vector_pursuit: false
+      use_collision_detection_for_omni: false
+      enable_csv_logging: true
+      csv_log_directory: "/home/dev/ros2_ws/src/third_party/dwpp_test_simulation/data"
+      csv_filename_prefix: "vpmax_nav2"
+    DWVP:
+      plugin: "nav2_dynamic_window_vector_pursuit_controller::DynamicWindowVectorPursuitController"
+      # Base RPP parameters (still required by inherited infrastructure)
+      max_linear_vel: 0.22
+      min_linear_vel: -0.22
+      max_angular_vel: 0.6
+      min_angular_vel: -0.6
+      max_linear_accel: 0.22
+      max_linear_decel: -0.22
+      max_angular_accel: 0.6
+      max_angular_decel: -0.6
+      lookahead_dist: 0.22
+      min_lookahead_dist: 0.11
+      max_lookahead_dist: 0.33
+      lookahead_time: 1.5
+      transform_tolerance: 0.1
+      use_velocity_scaled_lookahead_dist: true
+      use_collision_detection: false
+      stateful: false
+      # DWVP-specific parameters
+      max_vel_x: 0.22
+      min_vel_x: -0.22
+      max_vel_y: 0.22
+      min_vel_y: -0.22
+      max_vel_theta: 0.6
+      min_vel_theta: -0.6
+      max_accel_x: 0.22
+      max_accel_y: 0.22
+      max_accel_theta: 0.6
       orientation_time_weight: 1.0
       min_orientation_time: 0.2
       velocity_feedback: "OPEN_LOOP"
       use_dynamic_window_vector_pursuit: true
-      use_collision_detection_for_omni: true
+      use_collision_detection_for_omni: false
+      enable_csv_logging: true
+      csv_log_directory: "/home/dev/ros2_ws/src/third_party/dwpp_test_simulation/data"
+      csv_filename_prefix: "dwvp_nav2"
 
 velocity_smoother:
   ros__parameters:
-    smoothing_frequency: 20.0
+    smoothing_frequency: 30.0
     scale_velocities: False
     feedback: "OPEN_LOOP"
-    max_velocity: [0.22, 0.22, 0.5]
-    min_velocity: [-0.22, -0.22, -0.5]
-    max_accel: [0.5, 0.5, 0.5]
-    max_decel: [-0.5, -0.5, -0.5]
+    max_velocity: [0.22, 0.22, 0.6]
+    min_velocity: [-0.22, -0.22, -0.6]
+    max_accel: [0.22, 0.22, 0.6]
+    max_decel: [-0.22, -0.22, -0.6]
     odom_topic: "odom"
     odom_duration: 0.1
     deadband_velocity: [0.0, 0.0, 0.0]

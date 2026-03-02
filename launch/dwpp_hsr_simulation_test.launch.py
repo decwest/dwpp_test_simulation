@@ -89,7 +89,11 @@ def generate_launch_description() -> LaunchDescription:
             name='follow_path_gui',
             output='screen',
             emulate_tty=True,
-            parameters=[{'robot_model_name': "hsrb", 'world_model_name': "default", "record_frequency": 30, "data_dir": "/home/dev/ros2_ws/src/third_party/dwpp_test_simulation/data"}],
+            parameters=[{
+                'robot_model_name': "hsrb",
+                'world_model_name': "default",
+                'nav2_params_file': params_file,
+            }],
             remappings=[('/cmd_vel', '/omni_base_controller/cmd_vel')],
         )
 
