@@ -28,6 +28,16 @@ VX_MIN = -V_MAX
 VY_MAX = V_MAX
 VY_MIN = -V_MAX
 DT = 0.033
+POSE_ARROW_INTERVAL_SEC_DEFAULT = 0.5
+PATH_HEADING_ARROW_WIDTH = 0.0050
+PATH_HEADING_ARROW_LENGTH_MIN = 0.15
+PATH_HEADING_ARROW_LENGTH_SCALE = 0.032
+POSE_ARROW_WIDTH_BY_METHOD = 0.0060
+POSE_ARROW_WIDTH_OVERLAID = 0.0045
+TRACKING_LINEWIDTH_BY_METHOD = 1.1
+TRACKING_LINEWIDTH_OVERLAID = 1.1
+TRACKING_LINEWIDTH_ANIMATION = 1.1
+FORWARD_UP_ROTATION_RAD = 0.5 * np.pi
 GOAL_REACH_TOLERANCE_DIST_OMNI = 0.1
 GOAL_REACH_TOLERANCE_HEADING = math.radians(0.3)
 
@@ -449,6 +459,41 @@ def calc_path_headings(path: np.ndarray) -> np.ndarray:
     return np.concatenate([headings, [headings[-1]]])
 
 
+def transform_xy_for_display(xy: np.ndarray, forward_up_view: bool) -> np.ndarray:
+    if not forward_up_view:
+        return np.array(xy, copy=True)
+    out = np.array(xy, copy=True)
+    # Swap axes for plotting (x_plot:=left, y_plot:=forward).
+    # Horizontal inversion is applied at axis level so that +left appears on the left side.
+    out[:, 0] = xy[:, 1]
+    out[:, 1] = xy[:, 0]
+    return out
+
+
+def transform_pose_for_display(poses: np.ndarray, forward_up_view: bool) -> np.ndarray:
+    if not forward_up_view:
+        return np.array(poses, copy=True)
+    out = np.array(poses, copy=True)
+    out[:, 0] = poses[:, 1]
+    out[:, 1] = poses[:, 0]
+    out[:, 2] = np.where(
+        np.isfinite(poses[:, 2]),
+        normalize_angle(FORWARD_UP_ROTATION_RAD - poses[:, 2]),
+        poses[:, 2],
+    )
+    return out
+
+
+def apply_xy_axis_labels(ax: plt.Axes, forward_up_view: bool) -> None:
+    if forward_up_view:
+        ax.set_xlabel("$y$ [m]")
+        ax.set_ylabel("$x$ [m]")
+        ax.invert_xaxis()
+    else:
+        ax.set_xlabel("$x$ [m]")
+        ax.set_ylabel("$y$ [m]")
+
+
 def convert_velocity_to_vx_vy_w(spec: MethodSpec, velocities_raw: np.ndarray) -> np.ndarray:
     if spec.is_omni:
         return velocities_raw
@@ -567,25 +612,37 @@ def write_metrics_tables(path_dir: Path, rows: list[dict[str, str | float]], fig
     plt.close(fig)
 
 
-def draw_path_heading_arrows(ax: plt.Axes, path: np.ndarray, color: str = "black") -> None:
+def draw_path_heading_arrows(
+    ax: plt.Axes,
+    path: np.ndarray,
+    color: str = "black",
+    forward_up_view: bool = False,
+) -> None:
     headings = calc_path_headings(path)
     n = len(path)
     if n == 0:
         return
+    path_xy = path[:, :2]
+    path_xy_plot = transform_xy_for_display(path_xy, forward_up_view)
+    headings_plot = (
+        FORWARD_UP_ROTATION_RAD - headings
+        if forward_up_view else headings
+    )
+
     step = max(1, n // 24)
     indices = np.arange(0, n, step, dtype=int)
     if indices[-1] != n - 1:
         indices = np.append(indices, n - 1)
 
-    span_x = float(np.max(path[:, 0]) - np.min(path[:, 0]))
-    span_y = float(np.max(path[:, 1]) - np.min(path[:, 1]))
+    span_x = float(np.max(path_xy_plot[:, 0]) - np.min(path_xy_plot[:, 0]))
+    span_y = float(np.max(path_xy_plot[:, 1]) - np.min(path_xy_plot[:, 1]))
     diag = float(np.hypot(span_x, span_y))
-    arrow_length = max(0.24, 0.040 * diag)
+    arrow_length = max(PATH_HEADING_ARROW_LENGTH_MIN, PATH_HEADING_ARROW_LENGTH_SCALE * diag)
 
-    x = path[indices, 0]
-    y = path[indices, 1]
-    dx = arrow_length * np.cos(headings[indices])
-    dy = arrow_length * np.sin(headings[indices])
+    x = path_xy_plot[indices, 0]
+    y = path_xy_plot[indices, 1]
+    dx = arrow_length * np.cos(headings_plot[indices])
+    dy = arrow_length * np.sin(headings_plot[indices])
 
     ax.quiver(
         x,
@@ -597,12 +654,36 @@ def draw_path_heading_arrows(ax: plt.Axes, path: np.ndarray, color: str = "black
         scale=1.0,
         color=color,
         alpha=1.00,
-        width=0.006,
+        width=PATH_HEADING_ARROW_WIDTH,
         headwidth=5.0,
         headlength=6.0,
         headaxislength=5.0,
         label="Path Heading",
     )
+
+
+def sample_indices_by_time_interval(times: np.ndarray, interval_sec: float) -> np.ndarray:
+    if interval_sec <= 0.0:
+        raise ValueError("interval_sec must be > 0")
+    n = len(times)
+    if n == 0:
+        return np.empty((0,), dtype=int)
+    if n == 1:
+        return np.array([0], dtype=int)
+
+    times_f = np.asarray(times, dtype=float)
+    if not np.all(np.isfinite(times_f)):
+        return np.array([0, n - 1], dtype=int)
+    if np.any(np.diff(times_f) < 0.0):
+        return np.array([0, n - 1], dtype=int)
+
+    targets = np.arange(times_f[0], times_f[-1], interval_sec, dtype=float)
+    indices = np.searchsorted(times_f, targets, side="left")
+    indices = np.clip(indices, 0, n - 1)
+    if indices.size == 0:
+        indices = np.array([0], dtype=int)
+    indices = np.unique(np.append(indices, n - 1))
+    return indices.astype(int)
 
 
 def set_equal_axis_with_min_span(
@@ -647,12 +728,12 @@ def calc_tracking_layout(
     data_aspect = x_span / max(y_span, 1e-6)
 
     if data_aspect >= 1.6:
-        fig_height = 3.0
+        fig_height = 5.0
         fig_width = min(10.5, max(7.0, fig_height * data_aspect))
         margin_ratio = 0.08
     else:
-        fig_width = 3.0
-        fig_height = 3.0
+        fig_width = 5.0
+        fig_height = 5.0
         margin_ratio = 0.12
 
     return (fig_width, fig_height), min_span, margin_ratio
@@ -663,52 +744,67 @@ def save_tracking_plots_by_method(
     method_specs: list[MethodSpec],
     results: dict[str, SimulationResult],
     output_dir: Path,
+    pose_arrow_interval_sec: float,
+    forward_up_view: bool,
     file_prefix: str = "",
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
-    span_x = float(np.max(path[:, 0]) - np.min(path[:, 0]))
-    span_y = float(np.max(path[:, 1]) - np.min(path[:, 1]))
+    path_xy_plot = transform_xy_for_display(path[:, :2], forward_up_view)
+    span_x = float(np.max(path_xy_plot[:, 0]) - np.min(path_xy_plot[:, 0]))
+    span_y = float(np.max(path_xy_plot[:, 1]) - np.min(path_xy_plot[:, 1]))
     diag = float(np.hypot(span_x, span_y))
     pose_arrow_length = max(0.06, 0.055 * diag)
-    xy_arrays = [path[:, :2]]
+    display_poses = {
+        spec.key: transform_pose_for_display(results[spec.key].poses, forward_up_view)
+        for spec in method_specs
+    }
+    xy_arrays = [path_xy_plot]
     for spec in method_specs:
-        xy_arrays.append(results[spec.key].poses[:, :2])
+        xy_arrays.append(display_poses[spec.key][:, :2])
     fig_size, min_span, margin_ratio = calc_tracking_layout(xy_arrays, min_span_default=1.0)
 
     for spec in method_specs:
         fig, ax = plt.subplots(figsize=fig_size)
-        ax.plot(path[:, 0], path[:, 1], "k--", linewidth=1.1, label="Reference Path")
-        draw_path_heading_arrows(ax, path)
+        ax.plot(path_xy_plot[:, 0], path_xy_plot[:, 1], "k--", linewidth=1.1, label="Reference Path")
+        draw_path_heading_arrows(ax, path, forward_up_view=forward_up_view)
 
-        poses = results[spec.key].poses
-        ax.plot(poses[:, 0], poses[:, 1], color=spec.color, linewidth=1.0, label=spec.label)
-
-        step = max(1, len(poses) // 25)
-        indices = np.arange(0, len(poses), step, dtype=int)
-        if indices[-1] != len(poses) - 1:
-            indices = np.append(indices, len(poses) - 1)
-
-        dx = pose_arrow_length * np.cos(poses[indices, 2])
-        dy = pose_arrow_length * np.sin(poses[indices, 2])
-        ax.quiver(
-            poses[indices, 0],
-            poses[indices, 1],
-            dx,
-            dy,
-            angles="xy",
-            scale_units="xy",
-            scale=1.0,
+        poses = display_poses[spec.key]
+        times = results[spec.key].times
+        ax.plot(
+            poses[:, 0],
+            poses[:, 1],
             color=spec.color,
-            alpha=1.00,
-            width=0.0055,
-            headwidth=4.5,
-            headlength=5.5,
-            headaxislength=4.5,
+            linewidth=TRACKING_LINEWIDTH_BY_METHOD,
+            label=spec.label,
         )
 
+        n_arrow_samples = min(len(poses), len(times))
+        if n_arrow_samples > 0:
+            indices = sample_indices_by_time_interval(
+                times=times[:n_arrow_samples],
+                interval_sec=pose_arrow_interval_sec,
+            )
+
+            dx = pose_arrow_length * np.cos(poses[indices, 2])
+            dy = pose_arrow_length * np.sin(poses[indices, 2])
+            ax.quiver(
+                poses[indices, 0],
+                poses[indices, 1],
+                dx,
+                dy,
+                angles="xy",
+                scale_units="xy",
+                scale=1.0,
+                color=spec.color,
+                alpha=1.00,
+                width=POSE_ARROW_WIDTH_BY_METHOD,
+                headwidth=4.5,
+                headlength=5.5,
+                headaxislength=4.5,
+            )
+
         set_equal_axis_with_min_span(ax, xy_arrays, min_span=min_span, margin_ratio=margin_ratio)
-        ax.set_xlabel("$x$ [m]")
-        ax.set_ylabel("$y$ [m]")
+        apply_xy_axis_labels(ax, forward_up_view)
         ax.grid(True)
         plt.tight_layout()
         fig.savefig(output_dir / f"{file_prefix}tracking_poses_{spec.key}.png", dpi=200)
@@ -720,50 +816,65 @@ def save_tracking_plot_overlaid(
     method_specs: list[MethodSpec],
     results: dict[str, SimulationResult],
     output_path: Path,
+    pose_arrow_interval_sec: float,
+    forward_up_view: bool,
 ) -> None:
-    xy_arrays = [path[:, :2]]
+    path_xy_plot = transform_xy_for_display(path[:, :2], forward_up_view)
+    display_poses = {
+        spec.key: transform_pose_for_display(results[spec.key].poses, forward_up_view)
+        for spec in method_specs
+    }
+    xy_arrays = [path_xy_plot]
     for spec in method_specs:
-        xy_arrays.append(results[spec.key].poses[:, :2])
+        xy_arrays.append(display_poses[spec.key][:, :2])
     fig_size, min_span, margin_ratio = calc_tracking_layout(xy_arrays, min_span_default=1.0)
 
     fig, ax = plt.subplots(figsize=fig_size)
-    ax.plot(path[:, 0], path[:, 1], "k--", linewidth=1.1, label="Reference Path")
-    draw_path_heading_arrows(ax, path)
+    ax.plot(path_xy_plot[:, 0], path_xy_plot[:, 1], "k--", linewidth=1.0, label="Reference Path")
+    draw_path_heading_arrows(ax, path, forward_up_view=forward_up_view)
 
-    span_x = float(np.max(path[:, 0]) - np.min(path[:, 0]))
-    span_y = float(np.max(path[:, 1]) - np.min(path[:, 1]))
+    span_x = float(np.max(path_xy_plot[:, 0]) - np.min(path_xy_plot[:, 0]))
+    span_y = float(np.max(path_xy_plot[:, 1]) - np.min(path_xy_plot[:, 1]))
     diag = float(np.hypot(span_x, span_y))
     pose_arrow_length = max(0.06, 0.055 * diag)
     for spec in method_specs:
-        poses = results[spec.key].poses
-        ax.plot(poses[:, 0], poses[:, 1], color=spec.color, linewidth=1.0, label=spec.label)
-
-        step = max(1, len(poses) // 25)
-        indices = np.arange(0, len(poses), step, dtype=int)
-        if indices[-1] != len(poses) - 1:
-            indices = np.append(indices, len(poses) - 1)
-
-        dx = pose_arrow_length * np.cos(poses[indices, 2])
-        dy = pose_arrow_length * np.sin(poses[indices, 2])
-        ax.quiver(
-            poses[indices, 0],
-            poses[indices, 1],
-            dx,
-            dy,
-            angles="xy",
-            scale_units="xy",
-            scale=1.0,
+        poses = display_poses[spec.key]
+        times = results[spec.key].times
+        ax.plot(
+            poses[:, 0],
+            poses[:, 1],
             color=spec.color,
-            alpha=1.00,
-            width=0.0055,
-            headwidth=4.5,
-            headlength=5.5,
-            headaxislength=4.5,
+            linewidth=TRACKING_LINEWIDTH_OVERLAID,
+            label=spec.label,
         )
 
+        n_arrow_samples = min(len(poses), len(times))
+        if n_arrow_samples > 0:
+            indices = sample_indices_by_time_interval(
+                times=times[:n_arrow_samples],
+                interval_sec=pose_arrow_interval_sec,
+            )
+
+            dx = pose_arrow_length * np.cos(poses[indices, 2])
+            dy = pose_arrow_length * np.sin(poses[indices, 2])
+            ax.quiver(
+                poses[indices, 0],
+                poses[indices, 1],
+                dx,
+                dy,
+                angles="xy",
+                scale_units="xy",
+                scale=1.0,
+                color=spec.color,
+                alpha=1.00,
+                width=POSE_ARROW_WIDTH_OVERLAID,
+                headwidth=4.5,
+                headlength=5.5,
+                headaxislength=4.5,
+            )
+
     set_equal_axis_with_min_span(ax, xy_arrays, min_span=min_span, margin_ratio=margin_ratio)
-    ax.set_xlabel("$x$ [m]")
-    ax.set_ylabel("$y$ [m]")
+    apply_xy_axis_labels(ax, forward_up_view)
     ax.grid(True)
     plt.tight_layout()
     fig.savefig(output_path, dpi=200)
@@ -828,8 +939,11 @@ def save_velocity_profiles_by_method(
         axes[0].plot(result.times, v_ref[:, 1], color="red", linewidth=1.5, linestyle="--")
         axes[0].plot(result.times, v_real[:, 1], color="blue", linewidth=1.5, linestyle="--")
         axes[0].axhline(VX_MAX, color="black", linestyle="--", linewidth=0.8)
+        axes[0].axhline(VX_MIN, color="black", linestyle="--", linewidth=0.8)
         if abs(VY_MAX - VX_MAX) > 1e-9:
             axes[0].axhline(VY_MAX, color="0.35", linestyle="--", linewidth=0.8)
+        if abs(VY_MIN - VX_MIN) > 1e-9:
+            axes[0].axhline(VY_MIN, color="0.35", linestyle="--", linewidth=0.8)
         axes[0].set_ylabel(r"$v_x, v_y$ [m/s]")
         axes[0].set_xlim(0.0, time_max if time_max > 0.0 else 1.0)
         axes[0].set_ylim(*y_lim_v)
@@ -838,6 +952,7 @@ def save_velocity_profiles_by_method(
         axes[1].plot(result.times, v_ref[:, 2], color="red", linewidth=1.5)
         axes[1].plot(result.times, v_real[:, 2], color="blue", linewidth=1.5)
         axes[1].axhline(W_MAX, color="black", linestyle="--", linewidth=0.8)
+        axes[1].axhline(W_MIN, color="black", linestyle="--", linewidth=0.8)
         axes[1].set_ylabel(r"$\omega$ [rad/s]")
         axes[1].set_xlim(0.0, time_max if time_max > 0.0 else 1.0)
         axes[1].set_ylim(*y_lim_w)
@@ -854,23 +969,28 @@ def save_tracking_animation(
     method_specs: list[MethodSpec],
     results: dict[str, SimulationResult],
     output_dir: Path,
+    forward_up_view: bool,
 ) -> None:
     fig, ax = plt.subplots(figsize=(7.5, 7.5))
 
-    xy_arrays = [path[:, :2]]
+    path_xy_plot = transform_xy_for_display(path[:, :2], forward_up_view)
+    display_poses = {
+        spec.key: transform_pose_for_display(results[spec.key].poses, forward_up_view)
+        for spec in method_specs
+    }
+    xy_arrays = [path_xy_plot]
     for spec in method_specs:
-        xy_arrays.append(results[spec.key].poses[:, :2])
+        xy_arrays.append(display_poses[spec.key][:, :2])
     set_equal_axis_with_min_span(ax, xy_arrays, min_span=1.0, margin_ratio=0.2)
-    ax.set_xlabel("$x$ [m]")
-    ax.set_ylabel("$y$ [m]")
+    apply_xy_axis_labels(ax, forward_up_view)
     ax.set_title("Path Tracking Animation")
     ax.grid(True)
 
-    ax.plot(path[:, 0], path[:, 1], "k--", linewidth=1.1, label="Reference Path")
-    draw_path_heading_arrows(ax, path)
+    ax.plot(path_xy_plot[:, 0], path_xy_plot[:, 1], "k--", linewidth=1.1, label="Reference Path")
+    draw_path_heading_arrows(ax, path, forward_up_view=forward_up_view)
 
-    span_x = float(np.max(path[:, 0]) - np.min(path[:, 0]))
-    span_y = float(np.max(path[:, 1]) - np.min(path[:, 1]))
+    span_x = float(np.max(path_xy_plot[:, 0]) - np.min(path_xy_plot[:, 0]))
+    span_y = float(np.max(path_xy_plot[:, 1]) - np.min(path_xy_plot[:, 1]))
     diag = float(np.hypot(span_x, span_y))
     arrow_length = max(0.05, 0.05 * diag)
 
@@ -878,7 +998,13 @@ def save_tracking_animation(
     pose_points = {}
     pose_arrows = {}
     for spec in method_specs:
-        trail_line, = ax.plot([], [], color=spec.color, linewidth=1.1, label=spec.label)
+        trail_line, = ax.plot(
+            [],
+            [],
+            color=spec.color,
+            linewidth=TRACKING_LINEWIDTH_ANIMATION,
+            label=spec.label,
+        )
         pose_point, = ax.plot([], [], marker="o", color=spec.color, markersize=5)
         pose_arrow = FancyArrowPatch((0, 0), (0, 0), mutation_scale=10, color=spec.color, linewidth=1.0)
         pose_arrow.set_visible(False)
@@ -903,7 +1029,7 @@ def save_tracking_animation(
     def update(frame_idx: int):
         artists = []
         for spec in method_specs:
-            poses = results[spec.key].poses
+            poses = display_poses[spec.key]
             idx = min(frame_idx, len(poses) - 1)
             trail_lines[spec.key].set_data(poses[: idx + 1, 0], poses[: idx + 1, 1])
             pose_points[spec.key].set_data([poses[idx, 0]], [poses[idx, 1]])
@@ -1053,7 +1179,22 @@ def main() -> None:
     parser.add_argument("--one-minus-cos-length-x", type=float, default=1.5)
     parser.add_argument("--one-minus-cos-cycles", type=float, default=1.5)
     parser.add_argument("--one-minus-cos-num-points", type=int, default=None)
+    parser.add_argument(
+        "--pose-arrow-interval-sec",
+        type=float,
+        default=POSE_ARROW_INTERVAL_SEC_DEFAULT,
+        help="Time interval [s] for drawing pose orientation arrows in tracking plots.",
+    )
     parser.add_argument("--goal-tolerance", type=float, default=GOAL_REACH_TOLERANCE_DIST_OMNI)
+    parser.add_argument(
+        "--plot-view",
+        choices=["forward_up", "xy"],
+        default="forward_up",
+        help=(
+            "2D plot view. 'forward_up' rotates display so robot-forward points upward "
+            "and robot-left points left. 'xy' keeps raw x-right, y-up plotting."
+        ),
+    )
     parser.add_argument(
         "--goal-heading-tolerance-deg",
         type=float,
@@ -1076,6 +1217,9 @@ def main() -> None:
         help="Save tracking animation (MP4/GIF). Default: off",
     )
     args = parser.parse_args()
+    if args.pose_arrow_interval_sec <= 0.0:
+        raise ValueError("--pose-arrow-interval-sec must be > 0")
+    forward_up_view = args.plot_view == "forward_up"
 
     if len(args.run) == 0:
         if args.input_dir is None:
@@ -1149,6 +1293,8 @@ def main() -> None:
             method_specs=METHOD_SPECS,
             results=results,
             output_dir=path_dir,
+            pose_arrow_interval_sec=args.pose_arrow_interval_sec,
+            forward_up_view=forward_up_view,
             file_prefix=figure_prefix,
         )
         save_tracking_plot_overlaid(
@@ -1156,6 +1302,8 @@ def main() -> None:
             method_specs=METHOD_SPECS,
             results=results,
             output_path=path_dir / f"{figure_prefix}tracking_poses.png",
+            pose_arrow_interval_sec=args.pose_arrow_interval_sec,
+            forward_up_view=forward_up_view,
         )
         save_velocity_profiles_by_method(
             method_specs=METHOD_SPECS,
@@ -1169,6 +1317,7 @@ def main() -> None:
                 method_specs=METHOD_SPECS,
                 results=results,
                 output_dir=path_dir,
+                forward_up_view=forward_up_view,
             )
 
         for row in rows:
