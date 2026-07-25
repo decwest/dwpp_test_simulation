@@ -187,7 +187,7 @@ controller_server:
 
 velocity_smoother:
   ros__parameters:
-    smoothing_frequency: 30.0
+    smoothing_frequency: 20.0
     scale_velocities: False
     feedback: "OPEN_LOOP"
     max_velocity: [0.26, 0.0, 0.50]
