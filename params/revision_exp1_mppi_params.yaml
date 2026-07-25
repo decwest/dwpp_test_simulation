@@ -249,7 +249,13 @@ controller_server:
         cost_weight: 3.81
         near_collision_cost: 253
         critical_cost: 300.0
-        consider_footprint: true
+        # false (ECPP tuning was true): the frozen local_costmap defines
+        # robot_radius, not a footprint polygon, and consider_footprint: true
+        # aborts controller_server configure ("no robot footprint provided").
+        # Adding a footprint would also change the enabled collision_monitor's
+        # FootprintApproach behavior vs the frozen Dec 2025 conditions. On the
+        # obstacle-free exp1 course the point-cost check is equivalent anyway.
+        consider_footprint: false
         collision_cost: 1000000.0
         near_goal_distance: 1.0
         trajectory_point_step: 2
