@@ -214,7 +214,7 @@ controller_server:
       temperature: 0.2
       gamma: 0.015
       motion_model: "DiffDrive"
-      visualize: false
+      visualize: true                     # tuning用。本番計測前に false へ戻す (計算時間に影響)
       regenerate_noises: false            # reuse one noise distribution (less per-cycle jitter)
       TrajectoryVisualizer:
         trajectory_step: 5
