@@ -7,15 +7,14 @@
 #      (matches local_costmap inflation_layer.cost_scaling_factor)
 #   3. collision_monitor: all interventions disabled (transparent cmd_vel relay);
 #      safety = human supervisor with WHILL joystick override + soft obstacles
-#   4. Limits aligned with the RPP paper's hardware experiments (Sec. 5, incl. the
-#      confined corridor experiment) where the paper states them:
-#        v_max 0.8 m/s, a_max 0.2 m/s^2, "omega_max 3.2 rad/s^2" (unit says
-#        acceleration and 3.2 equals the classic ROS acc_lim_theta default, so it
-#        is applied as the ANGULAR ACCELERATION limit; the angular velocity limit
-#        is not stated in the paper and stays at the frozen 1.0 rad/s),
-#        lookahead 0.25-1.2 m with lookahead_time 1.0 s.
-#      All within WHILL measured hardware limits (~1.69 rad/s, ~5.7 rad/s^2).
-#      velocity_smoother mirrors the same limits.
+#   4. Velocity/acceleration limits and lookahead stay at the FROZEN paper values
+#      (the RPP paper used a different robot (Tiago) so its v_max/a_max/lookahead
+#      are not adopted). The RPP paper states NO numeric values for its regulation
+#      heuristics (r_min, proximity d_prox/alpha, min speed threshold); the values
+#      here (cost_scaling_dist 0.6, cost_scaling_gain 1.0, r_min 0.90,
+#      min_speed 0.25) are the RPP authors' own Nav2 reference-implementation
+#      defaults, which is the closest available alignment.
+#      Course geometry follows the paper: 1.5 m corridor, ~0.7 m obstacles.
 # Launch: ros2 launch ytlab2_whill_modules dwpp_experiment.launch.py \
 #   params_path:=/home/ubuntu/ros2_ws/src/dwpp_test_simulation/params/revision_exp2_obstacle_params.yaml \
 #   path_set:=corridor
@@ -43,18 +42,18 @@ controller_server:
       stateful: True
     RPP:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
-      max_linear_vel: 0.80    # RPP paper v_max
+      max_linear_vel: 0.50
       min_linear_vel: 0.0
-      max_angular_vel: 1.0    # not stated in RPP paper -> frozen value kept
+      max_angular_vel: 1.0
       min_angular_vel: -1.0
-      max_linear_accel: 0.20  # RPP paper a_max
-      max_linear_decel: -0.20
-      max_angular_accel: 3.2  # RPP paper "3.2 rad/s^2" (= ROS acc_lim_theta default)
-      max_angular_decel: -3.2
-      lookahead_dist: 0.60    # unused (velocity-scaled lookahead active)
-      min_lookahead_dist: 0.25  # RPP paper L_t range
-      max_lookahead_dist: 1.20  # RPP paper L_t range
-      lookahead_time: 1.0       # RPP paper lookahead time
+      max_linear_accel: 0.50
+      max_linear_decel: -0.50
+      max_angular_accel: 1.0
+      max_angular_decel: -1.0
+      lookahead_dist: 0.60
+      min_lookahead_dist: 0.30
+      max_lookahead_dist: 0.70
+      lookahead_time: 1.4
       # rotate_to_heading_angular_vel: 1.8
       # transform_tolerance: 0.1
       use_velocity_scaled_lookahead_dist: true # APP
@@ -83,18 +82,18 @@ controller_server:
       use_dynamic_window: false # DWPP
     DWPP:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
-      max_linear_vel: 0.80    # RPP paper v_max
+      max_linear_vel: 0.50
       min_linear_vel: 0.0
-      max_angular_vel: 1.0    # not stated in RPP paper -> frozen value kept
+      max_angular_vel: 1.0
       min_angular_vel: -1.0
-      max_linear_accel: 0.20  # RPP paper a_max
-      max_linear_decel: -0.20
-      max_angular_accel: 3.2  # RPP paper "3.2 rad/s^2" (= ROS acc_lim_theta default)
-      max_angular_decel: -3.2
-      lookahead_dist: 0.60    # unused (velocity-scaled lookahead active)
-      min_lookahead_dist: 0.25  # RPP paper L_t range
-      max_lookahead_dist: 1.20  # RPP paper L_t range
-      lookahead_time: 1.0       # RPP paper lookahead time
+      max_linear_accel: 0.50
+      max_linear_decel: -0.50
+      max_angular_accel: 1.0
+      max_angular_decel: -1.0
+      lookahead_dist: 0.60
+      min_lookahead_dist: 0.30
+      max_lookahead_dist: 0.70
+      lookahead_time: 1.4
       # rotate_to_heading_angular_vel: 1.8
       # transform_tolerance: 0.1
       use_velocity_scaled_lookahead_dist: true # APP
@@ -127,11 +126,10 @@ velocity_smoother:
     smoothing_frequency: 30.0
     scale_velocities: False
     feedback: "OPEN_LOOP"
-    # Mirrors the RPP-paper-aligned plugin limits above (exp2)
-    max_velocity: [0.80, 0.0, 1.0]
+    max_velocity: [0.50, 0.0, 1.0]
     min_velocity: [-0.0, 0.0, -1.0]
-    max_accel: [0.20, 0.0, 3.2]
-    max_decel: [-0.20, 0.0, -3.2]
+    max_accel: [0.50, 0.0, 1.0]
+    max_decel: [-0.50, 0.0, -1.0]
     odom_topic: "/whill/odom"
     odom_duration: 0.1
     deadband_velocity: [0.0, 0.0, 0.0]
