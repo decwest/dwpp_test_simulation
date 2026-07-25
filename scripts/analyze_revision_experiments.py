@@ -355,7 +355,8 @@ def run_exp2(revision_dir: Path, out_dir: Path, summary):
             ax2.plot(t, df_t["scan_min_dist"], color="teal", linewidth=0.8, alpha=0.7)
             ax2.set_ylabel("Min. scan distance [m]", color="teal")
             ax2.tick_params(axis="y", labelcolor="teal")
-        ax.axhline(y=V_MAX, color="black", linestyle="--", linewidth=1, alpha=0.5)
+        # 実②は RPP 論文準拠の制限値 (v_max 0.8 等) のため固定線は引かず、
+        # 実現可能領域は dynamic window 帯で示す
         ax.set_ylabel("Linear velocity [m/s]")
         ax.set_xlabel("Time [s]")
         ax.grid(True, alpha=0.3)

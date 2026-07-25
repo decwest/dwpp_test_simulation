@@ -34,6 +34,7 @@ import copy
 # Third Party Imports
 # =========================
 import numpy as np
+import yaml
 from scipy.spatial.transform import Rotation as R
 import tkinter as tk
 from tkinter import messagebox, ttk
@@ -368,6 +369,8 @@ class FollowPathClient(Node):
 
         # 制約値(コントローラ非依存の violation / dynamic window 計算に使用)。
         # controller_server 側のプラグイン設定と一致させること。
+        # limits_params_file (通常は Nav2 の params_path) を渡すと、そのファイルの
+        # コントローラブロックから自動同期される(二重管理による食い違いを防止)。
         self.control_frequency = self.declare_parameter("control_frequency", 30.0).value
         self.limits = {
             "max_linear_vel": self.declare_parameter("max_linear_vel", 0.50).value,
@@ -379,6 +382,9 @@ class FollowPathClient(Node):
             "max_angular_accel": self.declare_parameter("max_angular_accel", 1.0).value,
             "max_angular_decel": self.declare_parameter("max_angular_decel", -1.0).value,
         }
+        self.limits_params_file = self.declare_parameter("limits_params_file", "").value
+        if self.limits_params_file:
+            self._load_limits_from_params_file(self.limits_params_file)
 
         # --- Internal State Variables ---
         self._reentrant_group = ReentrantCallbackGroup()
@@ -520,6 +526,37 @@ class FollowPathClient(Node):
             self._trajectory_draw_loop,
             callback_group=self._reentrant_group,
         )
+
+    def _load_limits_from_params_file(self, path: str):
+        """
+        Nav2 params ファイルのコントローラブロックから制約値と制御周波数を読み、
+        レコーダの violation / dynamic window 計算をプラグイン設定に同期する。
+        (制限値の揃った最初のコントローラブロックを採用。MPPI ブロック等はスキップ)
+        """
+        try:
+            with open(path) as f:
+                doc = yaml.safe_load(f)
+            cs = doc["controller_server"]["ros__parameters"]
+            freq = cs.get("controller_frequency")
+            keys = list(self.limits.keys())
+            for name in cs.get("controller_plugins", []):
+                block = cs.get(name)
+                if isinstance(block, dict) and all(k in block for k in keys):
+                    self.limits = {k: float(block[k]) for k in keys}
+                    if freq:
+                        self.control_frequency = float(freq)
+                    self.get_logger().info(
+                        f"Recorder limits synced from {path} ({name} block): "
+                        f"{self.limits}, control_frequency={self.control_frequency}"
+                    )
+                    return
+            self.get_logger().warn(
+                f"No controller block with limit keys in {path}; using declared parameters"
+            )
+        except Exception as exc:
+            self.get_logger().warn(
+                f"Failed to load limits from {path}: {exc}; using declared parameters"
+            )
 
     # =========================================================================
     # Subscriber Callbacks
