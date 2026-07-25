@@ -193,7 +193,8 @@ controller_server:
       # 30 Hz adaptation: config/hardware_experiment/paper_2026_profiles.yaml (paper_exp2 MPPI)
       # Velocity/acceleration limits follow the frozen DWPP-paper constraint set,
       # NOT the ECPP hardware envelope (fairness requirement of the revision).
-      time_steps: 60                      # 60 x (1/30 s) = 2.0 s horizon
+      time_steps: 42                      # 42 x (1/30 s) = 1.4 s horizon = PP-family lookahead_time
+                                          # -> max 0.7 m projected travel at 0.5 m/s (= max_lookahead_dist)
       model_dt: 0.03333333333333333       # = 1 / controller_frequency
       batch_size: 2000
       ax_max: 0.26
@@ -231,7 +232,7 @@ controller_server:
         enabled: true
         cost_power: 1
         cost_weight: 5.0
-        threshold_to_consider: 1.0        # rescaled to the 2.0 s horizon travel
+        threshold_to_consider: 0.7        # rescaled to the 1.4 s horizon travel (0.7 m)
       GoalAngleCritic:
         enabled: true
         cost_power: 1
@@ -259,14 +260,14 @@ controller_server:
         max_path_occupancy_ratio: 0.05
         trajectory_point_step: 4
         threshold_to_consider: 0.5
-        offset_from_furthest: 33          # ~0.33 m at this path's 1 cm spacing (ECPP: 13 pts on 2.5 cm path)
+        offset_from_furthest: 23          # ~0.23 m (~1/3 of the 0.7 m horizon travel, ECPP scaling rule)
         use_path_orientations: false
       PathFollowCritic:
         enabled: true
         cost_power: 1
         cost_weight: 10.0
-        offset_from_furthest: 33          # ~0.33 m at 1 cm spacing
-        threshold_to_consider: 1.0        # rescaled to the 2.0 s horizon travel
+        offset_from_furthest: 70          # 0.70 m carrot at 1 cm spacing (= PP-family max lookahead)
+        threshold_to_consider: 0.7        # rescaled to the 1.4 s horizon travel (0.7 m)
       PathAngleCritic:
         enabled: true
         cost_power: 1
