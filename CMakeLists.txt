@@ -16,7 +16,10 @@ install(DIRECTORY launch config urdf rviz params world
 )
 
 install(PROGRAMS
+  scripts/cmd_vel_delay_test.py
   scripts/follow_path_test_gui.py
+  scripts/follow_path_test_gui_real.py
+  scripts/plot_dwpp_delay_analysis.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
