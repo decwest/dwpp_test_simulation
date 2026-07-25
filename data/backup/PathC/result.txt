@@ -1,0 +1,64 @@
+Method: APP
+RMSE: 0.5190 m
+Violation Rate: 0.6209
+
+Method: DWPP
+RMSE: 0.1259 m
+Violation Rate: 0.0000
+
+Method: PP
+RMSE: 0.3632 m
+Violation Rate: 0.4545
+
+Method: RPP
+RMSE: 0.1029 m
+Violation Rate: 0.0612
+
+Method: APP
+RMSE: 0.5190 m
+Violation Rate: 0.6209
+
+Method: DWPP
+RMSE: 0.1259 m
+Violation Rate: 0.0000
+
+Method: PP
+RMSE: 0.3632 m
+Violation Rate: 0.4545
+
+Method: RPP
+RMSE: 0.1029 m
+Violation Rate: 0.0612
+
+Method: APP
+RMSE: 0.5190 m
+Violation Rate: 0.6209
+
+Method: DWPP
+RMSE: 0.1259 m
+Violation Rate: 0.0000
+
+Method: PP
+RMSE: 0.3632 m
+Violation Rate: 0.4545
+
+Method: RPP
+RMSE: 0.1029 m
+Violation Rate: 0.0612
+
+Method: APP
+RMSE: 0.5190 m
+Violation Rate: 0.6209
+
+Method: DWPP
+RMSE: 0.1259 m
+Violation Rate: 0.0000
+
+Method: PP
+RMSE: 0.3632 m
+Violation Rate: 0.4545
+
+Method: RPP
+RMSE: 0.1029 m
+Violation Rate: 0.0612
+
