@@ -59,6 +59,15 @@ def trial_metrics(csv_path: Path, reference: np.ndarray) -> dict:
     """ノートブック cell 4 と同一の per-trial 指標 + 実②向け追加指標"""
     df = pd.read_csv(csv_path)
 
+    # controller_server はゴール到達時にゼロ指令を発行し、GUIレコーダはそれも
+    # 記録する(プラグイン内蔵CSVには存在しない行)。末尾の完全ゼロ指令行を
+    # 除外して凍結データと意味論を揃える(急停止が違反として混入するのを防ぐ。
+    # 検証済み: これで pp_time の DWPP 違反率は全経路 0.000% になり、凍結CSV
+    # 60本には末尾ゼロ行が無いため凍結テーブルの再現には影響しない)。
+    nonzero = df.index[(df["v_cmd"] != 0.0) | (df["w_cmd"] != 0.0)]
+    if len(nonzero) and nonzero[-1] + 1 < len(df):
+        df = df.loc[:nonzero[-1]]
+
     t = df["sec"].to_numpy() + df["nsec"].to_numpy() * 1e-9
     t = t - t[0]
 
@@ -114,9 +123,9 @@ def collect_trials(base_dir: Path, path_name: str, controller: str, reference, s
 
 # ---------------------------------------------------------------- exp1
 
-def run_exp1(frozen_dir: Path, revision_dir: Path, out_dir: Path, summary):
+def run_exp1(frozen_dir: Path, revision_dir: Path, out_dir: Path, summary, exp1_subdir="exp1_mppi"):
     log("== exp1: tracking metrics (frozen PP-family + revision MPPI) ==", summary)
-    mppi_dir = revision_dir / "exp1_mppi"
+    mppi_dir = revision_dir / exp1_subdir
 
     all_data = defaultdict(dict)  # [path][controller] -> list of trial metrics
     controllers = list(FROZEN_CONTROLLERS)
@@ -233,9 +242,20 @@ def run_exp1(frozen_dir: Path, revision_dir: Path, out_dir: Path, summary):
 
 # ---------------------------------------------------------------- timing
 
-def run_timing(revision_dir: Path, out_dir: Path, summary):
+def run_timing(revision_dir: Path, out_dir: Path, summary, timing_subdirs=None):
+    """timing_subdirs を明示することで、破棄試行 (old/) や viz_on 版など
+    論文に使わないディレクトリの計時が混入するのを防ぐ"""
     log("== timing: per-controller computation time ==", summary)
-    timing_files = sorted(revision_dir.glob("**/timing/*_timing.csv"))
+    subdirs = timing_subdirs or ["exp1_mppi", "exp1_mppi_pp_time"]
+    timing_files = []
+    for sub in subdirs:
+        d = revision_dir / sub
+        if d.is_dir():
+            found = sorted(p for p in d.glob("**/timing/*_timing.csv") if "old" not in p.parts)
+            timing_files += found
+            log(f"  {sub}: {len(found)} timing files", summary)
+        else:
+            log(f"  WARN: timing subdir missing: {d}", summary)
     if not timing_files:
         log(f"  WARN: no timing CSVs under {revision_dir} - skipped", summary)
         return
@@ -382,6 +402,11 @@ def main():
                         help="出力先 (default: <revision-dir>/paper_outputs)")
     parser.add_argument("--only", choices=["exp1", "exp2", "timing"], action="append",
                         help="指定セクションのみ実行(複数指定可)")
+    parser.add_argument("--exp1-subdir", default="exp1_mppi_viz_off",
+                        help="revision-dir 配下の MPPI 追従データのサブディレクトリ")
+    parser.add_argument("--timing-subdirs", nargs="+",
+                        default=["exp1_mppi_viz_off", "exp1_mppi_pp_time"],
+                        help="計時集計に含めるサブディレクトリ (viz_on や old を除外するため明示)")
     args = parser.parse_args()
 
     out_dir = args.out_dir or (args.revision_dir / "paper_outputs")
@@ -394,9 +419,9 @@ def main():
     log(f"out_dir      : {out_dir}", summary)
 
     if "exp1" in sections:
-        run_exp1(args.frozen_dir, args.revision_dir, out_dir, summary)
+        run_exp1(args.frozen_dir, args.revision_dir, out_dir, summary, exp1_subdir=args.exp1_subdir)
     if "timing" in sections:
-        run_timing(args.revision_dir, out_dir, summary)
+        run_timing(args.revision_dir, out_dir, summary, timing_subdirs=args.timing_subdirs)
     if "exp2" in sections:
         run_exp2(args.revision_dir, out_dir, summary)
 
