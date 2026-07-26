@@ -2,13 +2,13 @@
 # Derived from real_robot_experiment_params.yaml (frozen paper conditions).
 # Changes vs the frozen file:
 #   1. controller_plugins += "MPPI" (PP/APP/RPP/DWPP blocks unchanged)
-#   2. MPPI block added (limits = frozen constraint set: vx 0.5, wz 1.0, ax 0.5, az 1.0)
-#   3. local_costmap 3x3 -> 6x6 (MPPI 2.0 s horizon; PP-family does not read the costmap)
+#   2. MPPI block added (frozen safety envelope: vx 0.5, wz 1.0, ax 0.5, az 1.0)
+#   3. local_costmap 3x3 -> 6x6 (MPPI 3.0 s horizon; PP-family does not read the costmap)
 # Launch: ros2 launch ytlab2_whill_modules dwpp_experiment.launch.py \
 #   params_path:=/home/ubuntu/ros2_ws/src/dwpp_test_simulation/params/revision_exp1_mppi_params.yaml
 controller_server:
   ros__parameters:
-    controller_frequency: 30.0
+    controller_frequency: 20.0
     costmap_update_timeout: 0.3
     min_x_velocity_threshold: 0.001
     min_y_velocity_threshold: 0.5
@@ -191,39 +191,49 @@ controller_server:
     MPPI:
       plugin: "nav2_mppi_controller::MPPIController"
       # Tuned base: ytlab2_whill_modules/config/nav2/controller_comparison_params.yaml (MPPI)
-      # 30 Hz adaptation: config/hardware_experiment/paper_2026_profiles.yaml (paper_exp2 MPPI)
-      # Velocity/acceleration limits follow the frozen DWPP-paper constraint set,
-      # NOT the ECPP hardware envelope (fairness requirement of the revision).
-      time_steps: 60                      # 60 x (1/30 s) = 2.0 s horizon
-      model_dt: 0.03333333333333333       # = 1 / controller_frequency
+      # 30 Hz source profile: config/hardware_experiment/paper_2026_profiles.yaml (paper_exp2 MPPI)
+      # Final comparison profile runs all controllers at 20 Hz so that MPPI
+      # satisfies the real-time deadline with a 3.0 s prediction horizon.
+      # MPPI uses a 3.0 s horizon: long enough to initiate the 135 deg turn
+      # under the common angular limits without excessive long-horizon corner cutting.
+      # Acceleration limits and the downstream velocity-smoother safety envelope
+      # follow the frozen DWPP-paper constraint set, not the ECPP hardware envelope.
+      time_steps: 60                      # 60 x 0.05 s = 3.0 s prediction window
+      model_dt: 0.05                      # = 1 / controller_frequency (20 Hz)
       batch_size: 2000
       ax_max: 0.50
       ax_min: -0.50
       ay_max: 0.0
       ay_min: -0.0
       az_max: 1.00
-      vx_std: 0.15                      # tuned-base value (0.20 caused rotation-heavy sampling)
+      vx_std: 0.20                      # pair with the validated forward deadband profile below
       vy_std: 0.0
-      wz_std: 0.30                      # tuned-base value
+      wz_std: 0.50                      # retain enough candidates for a feasible cornering arc
       vx_max: 0.50
       vx_min: 0.0
       vy_max: 0.0
-      wz_max: 1.00
+      wz_max: 1.0                      # modest authority to finish the 135 deg turn before progress timeout
       iteration_count: 1
-      prune_distance: 1.7
+      prune_distance: 2.5                 # retain enough post-corner direction for the 135 deg polyline
       transform_tolerance: 0.1
-      temperature: 0.2
-      gamma: 0.015
+      temperature: 0.3                    # avoid locking onto one saturated-wz sample sequence
+      gamma: 0.015                        # Nav2 default and validated 20 Hz value
       motion_model: "DiffDrive"
-      visualize: true                     # tuning用。本番計測前に false へ戻す (計算時間に影響)
-      regenerate_noises: false            # reuse one noise distribution (less per-cycle jitter)
+      visualize: false                   # disabled for final controller-timing measurements
+      regenerate_noises: true             # generate a fresh noise distribution for each control cycle
       TrajectoryVisualizer:
         trajectory_step: 5
         time_step: 3
       critics: [
-        "ConstraintCritic", "CostCritic", "GoalCritic",
+        "ConstraintCritic", "GoalCritic",
         "GoalAngleCritic", "PathAlignCritic", "PathFollowCritic",
-        "PathAngleCritic", "PreferForwardCritic"]
+        "PathAngleCritic", "TwirlingCritic",
+        "VelocityDeadbandCritic"]
+      # critics: [
+      #   "ConstraintCritic", "GoalCritic",
+      #   "GoalAngleCritic", "PathFollowCritic",
+      #   "PathAngleCritic", "PreferForwardCritic", "TwirlingCritic",
+      #   "VelocityDeadbandCritic"]
       ConstraintCritic:
         enabled: true
         cost_power: 1
@@ -231,8 +241,8 @@ controller_server:
       GoalCritic:
         enabled: true
         cost_power: 1
-        cost_weight: 5.0
-        threshold_to_consider: 1.0        # rescaled to the 2.0 s horizon travel
+        cost_weight: 45.0                 # retain goal capture against the stronger forward deadband
+        threshold_to_consider: 1.4        # near the 1.5 m maximum projected horizon travel
       GoalAngleCritic:
         enabled: true
         cost_power: 1
@@ -243,18 +253,23 @@ controller_server:
         cost_power: 1
         cost_weight: 5.0
         threshold_to_consider: 0.5
-      CostCritic:
+      TwirlingCritic:
         enabled: true
+        cost_power: 1
+        cost_weight: 25.0                 # validated threshold that prevents saturated warm-start spin
+      VelocityDeadbandCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 30.0                 # maintain a moving arc through the 135 deg corner
+        deadband_velocities: [0.10, 0.0, 0.0]  # preserve translational progress through a corner
+      CostCritic:
+        # Inert reference block: CostCritic is intentionally absent from critics.
+        # Exp1 is an obstacle-free tracking test, matching the PP-family setup.
+        enabled: false
         cost_power: 1
         cost_weight: 3.81
         near_collision_cost: 253
         critical_cost: 300.0
-        # false (ECPP tuning was true): the frozen local_costmap defines
-        # robot_radius, not a footprint polygon, and consider_footprint: true
-        # aborts controller_server configure ("no robot footprint provided").
-        # Adding a footprint would also change the enabled collision_monitor's
-        # FootprintApproach behavior vs the frozen Dec 2025 conditions. On the
-        # obstacle-free exp1 course the point-cost check is equivalent anyway.
         consider_footprint: false
         collision_cost: 1000000.0
         near_goal_distance: 1.0
@@ -262,26 +277,34 @@ controller_server:
       PathAlignCritic:
         enabled: true
         cost_power: 1
-        cost_weight: 30.0
+        cost_weight: 15.0
         max_path_occupancy_ratio: 0.05
-        trajectory_point_step: 4
+        trajectory_point_step: 4          # 4 / 20 Hz = 0.20 s evaluation spacing
         threshold_to_consider: 0.5
-        offset_from_furthest: 33          # ~0.33 m (~1/3 of the 1.0 m horizon travel, ECPP scaling rule)
+        offset_from_furthest: 33          # activation gate, not a path lookahead distance
         use_path_orientations: false
-      PathFollowCritic:
-        enabled: true
-        cost_power: 1
-        cost_weight: 10.0
-        offset_from_furthest: 70          # 0.70 m carrot at 1 cm spacing (= PP-family max lookahead)
-        threshold_to_consider: 1.0        # rescaled to the 2.0 s horizon travel
       PathAngleCritic:
         enabled: true
         cost_power: 1
         cost_weight: 6.0
-        offset_from_furthest: 30          # ~0.3 m at 1 cm spacing (4 pts = 4 cm caused spinning)
+        offset_from_furthest: 70
         threshold_to_consider: 0.5
-        max_angle_to_furthest: 1.0
+        max_angle_to_furthest: 0.523599
         mode: 0
+      PathFollowCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 8.0
+        offset_from_furthest: 25          # 0.25 m beyond the candidates' furthest reach at 1 cm spacing
+        threshold_to_consider: 1.4        # near the 1.5 m maximum projected horizon travel
+      # PathAngleCritic:
+      #   enabled: true
+      #   cost_power: 1
+      #   cost_weight: 12.0                 # overcome TwirlingCritic only when the 30 deg gate opens at a corner
+      #   offset_from_furthest: 70          # 0.70 m beyond the furthest sampled reach within the local plan
+      #   threshold_to_consider: 0.5
+      #   max_angle_to_furthest: 0.523599   # 30 deg gate limits early corner cutting; VDB sustains the turn
+      #   mode: 0
 
 velocity_smoother:
   ros__parameters:
@@ -391,7 +414,7 @@ local_costmap:
       global_frame: odom
       robot_base_frame: base_footprint
       rolling_window: true
-      # 6x6 (was 3x3): contains MPPI's 2.0 s horizon travel + footprint (ECPP precedent).
+      # 6x6 (was 3x3): contains MPPI's 3.0 s horizon travel + footprint (ECPP precedent).
       width: 6
       height: 6
       resolution: 0.05

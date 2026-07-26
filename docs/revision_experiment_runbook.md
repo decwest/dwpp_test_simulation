@@ -45,6 +45,11 @@ ros2 param get /controller_server controller_plugins   # ['PP','APP','RPP','DWPP
                                                        # (nelson デフォルトのままだと違うリストになる)
 ros2 topic echo /controller_server/computation_time --once   # 走行開始後に流れること
 ```
+
+Nav2 の lifecycle bringup は bond タイムアウトで間欠的に途中放棄されることがあるが、
+launch に組み込みの `nav2_bringup_watchdog`(起動20秒後に動作)が未activateノードを
+自動修復する。ログに `all lifecycle nodes active - watchdog done` が出れば bringup 完了。
+`gave up:` が出た場合のみ launch を再起動する。
 - RViz で経路プレビューが **45/90/135° 折れ線**であること(ISO 正方形なら path_set 未指定)。
 - AMCL 収束確認: GUI が起動時に (0,0,0) の initialpose を自動発行するので、**2D Pose Estimate で再初期化 → スキャンが壁に一致してから** "Update Path Origin"。
 
@@ -61,6 +66,13 @@ ros2 topic echo /controller_server/computation_time --once   # 走行開始後�
 - バッテリー残量を試行ごとにメモ(>50% 推奨)。
 
 ## 3. 実②: 障害物環境(corridor スラローム、RPP vs DWPP)
+
+### パラメータ方針(RPP 論文との対応)
+
+- **速度・加速度制約・lookahead は凍結値のまま**(RPP 論文は別ロボット(Tiago)での実験のため、v_max 0.8 / a_max 0.2 / lookahead 0.25–1.2 等は採用しない)。
+- **RPP のヒューリスティクス関連パラメータは論文に数値記載が一切ない**(r_min、proximity の d_prox・α、最低速度閾値とも)。本実験の値(cost_scaling_dist 0.6 / cost_scaling_gain 1.0 / inflation_cost_scaling_factor 3.0 / r_min 0.90 / min_speed 0.25)は **RPP 著者自身の Nav2 リファレンス実装デフォルト**であり、可能な範囲で最も論文に忠実な設定。レターでもそのように説明する。
+- **コース幾何のみ論文踏襲**(幅 1.5 m、障害物 ~0.7 m、5 試行、指標)。
+- レコーダの制約値は params_path から自動同期される(起動ログの `Recorder limits synced from ...` を確認)。
 
 ### コース設営(RPP 論文 confined corridor 踏襲)
 
@@ -130,5 +142,5 @@ v_cmd/w_cmd 一致(1e-6)と violation 一致率 >99% で PASS。
 
 - `params_path` を指定し忘れると **nelson_test_params.yaml** が読まれる(チェックコマンドで検出)。
 - MPPI は unstamped Twist 前提(Jazzy デフォルト)。cmd が流れなければ `enable_stamped_cmd_vel` を疑う。
-- レコーダの制約値は launch 側でプラグイン設定と同値をパラメータ渡ししている。**制約値を変える場合は params と launch の両方を変えること**(実①の制約は凍結値から変更禁止)。
+- レコーダの制約値は **params_path のコントローラブロックから自動同期**(`limits_params_file`)。起動ログで `Recorder limits synced` を確認。同期失敗時は宣言デフォルト(凍結値)にフォールバックし警告が出る(実②では致命的なので必ず確認)。実①の制約は凍結値から変更禁止。
 - GUI レコーダの curvature / v_reg 列は常に NaN(コントローラ非依存化のため)。dynamic window スナップショット図が必要な解析はプラグインCSV(PP系のみ)を使う。
