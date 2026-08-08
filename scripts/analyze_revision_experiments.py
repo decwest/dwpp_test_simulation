@@ -303,7 +303,8 @@ def run_timing(revision_dir: Path, out_dir: Path, summary, timing_subdirs=None):
 
 # ---------------------------------------------------------------- exp2
 
-def run_exp2(revision_dir: Path, out_dir: Path, summary, exp2_dir: Path = None, plan_csv: Path = None):
+def run_exp2(revision_dir: Path, out_dir: Path, summary, exp2_dir: Path = None, plan_csv: Path = None,
+             label: str = EXP2_PATH_LABEL):
     log("== exp2: obstacle corridor (RPP vs DWPP, proximity heuristic ON) ==", summary)
     base = exp2_dir if exp2_dir is not None else revision_dir / "exp2_obstacle"
 
@@ -320,10 +321,10 @@ def run_exp2(revision_dir: Path, out_dir: Path, summary, exp2_dir: Path = None, 
 
     all_trials = {}
     for controller in EXP2_CONTROLLERS:
-        trials = collect_trials(base, EXP2_PATH_LABEL, controller, reference, summary,
+        trials = collect_trials(base, label, controller, reference, summary,
                                 anchor_to_start=anchor)
         all_trials[controller] = trials
-        log(f"  {EXP2_PATH_LABEL}/{controller}: {len(trials)} trials", summary)
+        log(f"  {label}/{controller}: {len(trials)} trials", summary)
     if not any(all_trials.values()):
         log(f"  WARN: no exp2 data under {base} - skipped", summary)
         return
@@ -364,8 +365,9 @@ def run_exp2(revision_dir: Path, out_dir: Path, summary, exp2_dir: Path = None, 
         )
         agg_records.append(rec)
 
-    pd.DataFrame(per_trial_records).to_csv(out_dir / "exp2_per_trial_records.csv", index=False)
-    write_table(pd.DataFrame(agg_records).set_index("controller").T, out_dir, "exp2_corridor_table")
+    stem = f"exp2_{label.lower()}"
+    pd.DataFrame(per_trial_records).to_csv(out_dir / f"{stem}_per_trial_records.csv", index=False)
+    write_table(pd.DataFrame(agg_records).set_index("controller").T, out_dir, f"{stem}_table")
     log("  NOTE: collision_flag は scan_min_dist < "
         f"{EXP2_COLLISION_DIST} m の自動判定。実験ノートの手動カウントと突き合わせること", summary)
 
@@ -402,7 +404,7 @@ def run_exp2(revision_dir: Path, out_dir: Path, summary, exp2_dir: Path = None, 
         row += 1
     fig.tight_layout()
     for ext in ("pdf", "png"):
-        fig.savefig(out_dir / f"exp2_corridor_vcmd_window.{ext}", dpi=300, bbox_inches="tight")
+        fig.savefig(out_dir / f"{stem}_vcmd_window.{ext}", dpi=300, bbox_inches="tight")
     plt.close(fig)
     log(f"  exp2 figures written to {out_dir}", summary)
 
@@ -427,6 +429,8 @@ def main():
                         help="計時集計に含めるサブディレクトリ (viz_on や old を除外するため明示)")
     parser.add_argument("--exp2-dir", type=Path, default=None,
                         help="実②データディレクトリ (default: <revision-dir>/exp2_obstacle)")
+    parser.add_argument("--exp2-label", default="Corridor",
+                        help="実②のコースラベル (サブディレクトリ名, e.g. Corridor / Corridor_R1.5)")
     parser.add_argument("--exp2-plan", type=Path,
                         default=REPO_ROOT.parent / "ytlab2_whill" / "ytlab2_whill_modules"
                         / "worlds" / "corridor" / "map" / "fixed_plan.csv",
@@ -449,7 +453,7 @@ def main():
         run_timing(args.revision_dir, out_dir, summary, timing_subdirs=args.timing_subdirs)
     if "exp2" in sections:
         run_exp2(args.revision_dir, out_dir, summary,
-                 exp2_dir=args.exp2_dir, plan_csv=args.exp2_plan)
+                 exp2_dir=args.exp2_dir, plan_csv=args.exp2_plan, label=args.exp2_label)
 
     (out_dir / "summary.txt").write_text("\n".join(summary) + "\n")
     print(f"\nDone. Outputs in {out_dir} (see summary.txt)")
