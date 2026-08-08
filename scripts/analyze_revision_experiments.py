@@ -55,7 +55,7 @@ def corridor_reference_path(length=9.0, n_points=900):
     return np.c_[xs, np.zeros_like(xs)]
 
 
-def trial_metrics(csv_path: Path, reference: np.ndarray) -> dict:
+def trial_metrics(csv_path: Path, reference: np.ndarray, anchor_to_start: bool = True) -> dict:
     """ノートブック cell 4 と同一の per-trial 指標 + 実②向け追加指標"""
     df = pd.read_csv(csv_path)
 
@@ -71,10 +71,16 @@ def trial_metrics(csv_path: Path, reference: np.ndarray) -> dict:
     t = df["sec"].to_numpy() + df["nsec"].to_numpy() * 1e-9
     t = t - t[0]
 
-    x, y, _ = al.transform_pose_to_path_origin(
-        df["map_base_x"].to_numpy(), df["map_base_y"].to_numpy(), df["map_base_yaw"].to_numpy(),
-        df["map_base_x"].to_numpy()[0], df["map_base_y"].to_numpy()[0], df["map_base_yaw"].to_numpy()[0],
-    )
+    if anchor_to_start:
+        # ロボット原点アンカーの経路 (実①の折れ線): 試行開始姿勢基準に変換
+        x, y, _ = al.transform_pose_to_path_origin(
+            df["map_base_x"].to_numpy(), df["map_base_y"].to_numpy(), df["map_base_yaw"].to_numpy(),
+            df["map_base_x"].to_numpy()[0], df["map_base_y"].to_numpy()[0], df["map_base_yaw"].to_numpy()[0],
+        )
+    else:
+        # map 座標系の固定経路 (実②の fixed_plan): map 姿勢をそのまま比較
+        x = df["map_base_x"].to_numpy()
+        y = df["map_base_y"].to_numpy()
     robot_path = np.vstack((x, y)).T
     tracking_errors = al.calc_tracking_error(robot_path, reference)
 
@@ -110,12 +116,13 @@ def write_table(df: pd.DataFrame, out_dir: Path, name: str, float_fmt="%.4f"):
     print(f"  wrote {csv_path.name} / {tex_path.name}")
 
 
-def collect_trials(base_dir: Path, path_name: str, controller: str, reference, summary):
+def collect_trials(base_dir: Path, path_name: str, controller: str, reference, summary,
+                   anchor_to_start: bool = True):
     data_dir = base_dir / path_name / controller
     trials = []
     for csv_path in sorted(data_dir.glob("*.csv")):
         try:
-            trials.append(trial_metrics(csv_path, reference))
+            trials.append(trial_metrics(csv_path, reference, anchor_to_start=anchor_to_start))
         except Exception as exc:
             log(f"  WARN: failed to read {csv_path}: {exc}", summary)
     return trials
@@ -296,14 +303,25 @@ def run_timing(revision_dir: Path, out_dir: Path, summary, timing_subdirs=None):
 
 # ---------------------------------------------------------------- exp2
 
-def run_exp2(revision_dir: Path, out_dir: Path, summary):
+def run_exp2(revision_dir: Path, out_dir: Path, summary, exp2_dir: Path = None, plan_csv: Path = None):
     log("== exp2: obstacle corridor (RPP vs DWPP, proximity heuristic ON) ==", summary)
-    base = revision_dir / "exp2_obstacle"
-    reference = corridor_reference_path()
+    base = exp2_dir if exp2_dir is not None else revision_dir / "exp2_obstacle"
+
+    if plan_csv is not None and Path(plan_csv).is_file():
+        # 凍結済み map 座標系の参照経路 (実験で全試行に共通配信した fixed plan)
+        plan = pd.read_csv(plan_csv)
+        reference = np.c_[plan["x"].to_numpy(), plan["y"].to_numpy()]
+        anchor = False
+        log(f"  reference: fixed plan {plan_csv} ({len(reference)} pts, map frame)", summary)
+    else:
+        reference = corridor_reference_path()
+        anchor = True
+        log("  reference: straight 9 m corridor line (start-anchored)", summary)
 
     all_trials = {}
     for controller in EXP2_CONTROLLERS:
-        trials = collect_trials(base, EXP2_PATH_LABEL, controller, reference, summary)
+        trials = collect_trials(base, EXP2_PATH_LABEL, controller, reference, summary,
+                                anchor_to_start=anchor)
         all_trials[controller] = trials
         log(f"  {EXP2_PATH_LABEL}/{controller}: {len(trials)} trials", summary)
     if not any(all_trials.values()):
@@ -407,6 +425,13 @@ def main():
     parser.add_argument("--timing-subdirs", nargs="+",
                         default=["exp1_mppi_viz_off", "exp1_mppi_pp_time"],
                         help="計時集計に含めるサブディレクトリ (viz_on や old を除外するため明示)")
+    parser.add_argument("--exp2-dir", type=Path, default=None,
+                        help="実②データディレクトリ (default: <revision-dir>/exp2_obstacle)")
+    parser.add_argument("--exp2-plan", type=Path,
+                        default=REPO_ROOT.parent / "ytlab2_whill" / "ytlab2_whill_modules"
+                        / "worlds" / "corridor" / "map" / "fixed_plan.csv",
+                        help="実②の凍結参照経路 CSV (map 座標系, columns x,y[,yaw])。"
+                             "見つからない場合は直線コリドー参照にフォールバック")
     args = parser.parse_args()
 
     out_dir = args.out_dir or (args.revision_dir / "paper_outputs")
@@ -423,7 +448,8 @@ def main():
     if "timing" in sections:
         run_timing(args.revision_dir, out_dir, summary, timing_subdirs=args.timing_subdirs)
     if "exp2" in sections:
-        run_exp2(args.revision_dir, out_dir, summary)
+        run_exp2(args.revision_dir, out_dir, summary,
+                 exp2_dir=args.exp2_dir, plan_csv=args.exp2_plan)
 
     (out_dir / "summary.txt").write_text("\n".join(summary) + "\n")
     print(f"\nDone. Outputs in {out_dir} (see summary.txt)")
