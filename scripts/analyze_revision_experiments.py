@@ -17,6 +17,7 @@ DWPP RAS revision 実験の一括解析スクリプト。
 """
 
 import argparse
+import re
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -24,6 +25,8 @@ from pathlib import Path
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.collections import LineCollection
+from matplotlib.lines import Line2D
 import numpy as np
 import pandas as pd
 
@@ -128,6 +131,105 @@ def collect_trials(base_dir: Path, path_name: str, controller: str, reference, s
     return trials
 
 
+# ---------------------------------------------------- paper-style figure helpers
+
+def plot_path_comparison_paper(path_name, all_data, controllers, out_dir):
+    """論文 Fig 7-9(a) と同一スタイル (notebook cell 11 準拠) の経路比較図。
+    全コントローラ x 全試行を重ね書きし、参照経路を最後(最前面)に描く。
+    凡例は別ファイル path_comparison_label.png (make_path_comparison_legend)。"""
+    fig = plt.figure(figsize=(3, 3))
+    ax = fig.add_subplot(111)
+    for controller in controllers:
+        for tr in all_data[path_name].get(controller, []):
+            ax.plot(tr["y"], tr["x"], color=al.color_dict[controller], linewidth=0.5)
+    ref = al.reference_path[path_name]
+    ax.plot(ref[:, 1], ref[:, 0], "k--", linewidth=1, alpha=0.7)
+    ax.set_xlabel("$y$ [m]")
+    ax.set_ylabel("$x$ [m]")
+    ax.grid(True, alpha=0.3)
+    ax.set_aspect("equal")
+    ax.invert_xaxis()
+    fig.tight_layout()
+    for ext in ("pdf", "png"):
+        fig.savefig(out_dir / f"{path_name}_path_comparison.{ext}", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_velocity_profile_paper(tr, path_name, controller, out_dir):
+    """論文 Fig 7-9(b)-(e) と同一スタイル (notebook cell 13 準拠) の速度プロファイル。
+    出荷済みの凍結図は cell 20 の font.size=20 が有効な状態で生成されているため、
+    ここでも 20 に合わせる (page size ≈ 472x184 pt, ω目盛 = -1/0/1)。"""
+    df_t = tr["df"]
+    with plt.rc_context({"font.size": 20}):
+        _plot_velocity_profile_paper_inner(tr, df_t, path_name, controller, out_dir)
+
+
+def _plot_velocity_profile_paper_inner(tr, df_t, path_name, controller, out_dir):
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(7, 3))
+    ax1.plot(tr["t"], df_t["v_cmd"], "-", color="red", linewidth=1, alpha=0.8)
+    ax1.plot(tr["t"], df_t["v_real"], "-", color="blue", linewidth=1)
+    ax1.axhline(y=V_MAX, color="black", linestyle="--", linewidth=1, alpha=0.7)
+    ax1.set_xlabel("$t$ [s]")
+    ax1.set_ylabel("$v$ [m/s]")
+    ax1.set_yticks([0, 0.25, 0.50])
+    ax1.grid(True, alpha=0.3)
+    ax2.plot(tr["t"], df_t["w_cmd"], "-", color="red", linewidth=1, alpha=0.8)
+    ax2.plot(tr["t"], df_t["w_real"], "-", color="blue", linewidth=1)
+    ax2.axhline(y=W_MAX, color="black", linestyle="--", linewidth=2, alpha=0.7)
+    ax2.axhline(y=-W_MAX, color="black", linestyle="--", linewidth=2, alpha=0.7)
+    ax2.set_xlabel("$t$ [s]")
+    ax2.set_ylabel("$\\omega$ [rad/s]")
+    ax2.set_ylim(-1.5, 1.5)
+    ax2.set_yticks([-1, 0, 1])
+    ax2.grid(True, alpha=0.3)
+    fig.tight_layout()
+    for ext in ("pdf", "png"):
+        fig.savefig(out_dir / f"{path_name}_{controller}_velocity.{ext}", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
+def make_path_comparison_legend(controllers, out_dir):
+    """Fig 7-9(a) の上に置く共有凡例 (path_comparison_label.png) を再生成する。"""
+    handles = [Line2D([], [], color="black", linestyle="--", linewidth=3, label="Path")]
+    handles += [Line2D([], [], color=al.color_dict[c], linewidth=3, label=c) for c in controllers]
+    fig = plt.figure(figsize=(9, 0.5))
+    ax = fig.add_subplot(111)
+    ax.axis("off")
+    ax.legend(handles=handles, loc="center", ncol=len(handles), frameon=True,
+              edgecolor="black", handlelength=1.6, columnspacing=1.3, handletextpad=0.6)
+    for ext in ("png", "pdf"):
+        fig.savefig(out_dir / f"path_comparison_label.{ext}", dpi=300,
+                    bbox_inches="tight", pad_inches=0.05)
+    plt.close(fig)
+
+
+def load_occupancy_map(map_yaml: Path):
+    """ROS の map.yaml + P5 PGM を numpy で読み、(img, extent) を返す。
+    extent は map 座標系での (xmin, xmax, ymin, ymax)。PGM の行0が地図上端
+    なので imshow は origin='upper' で描くこと。"""
+    text = map_yaml.read_text()
+    res = float(re.search(r"^resolution:\s*([\d.eE+-]+)", text, re.M).group(1))
+    ox, oy = [float(v) for v in
+              re.search(r"^origin:\s*\[([^\]]+)\]", text, re.M).group(1).split(",")[:2]]
+    image = re.search(r"^image:\s*(\S+)", text, re.M).group(1)
+    data = (map_yaml.parent / image).read_bytes()
+    m = re.match(rb"P5\s+(?:#[^\n]*\s+)*(\d+)\s+(\d+)\s+(\d+)\s", data)
+    w, h = int(m.group(1)), int(m.group(2))
+    img = np.frombuffer(data, dtype=np.uint8, count=w * h, offset=m.end()).reshape(h, w)
+    extent = (ox, ox + w * res, oy, oy + h * res)
+    return img, extent
+
+
+def draw_corridor_map(ax, img, extent, plan_xy):
+    """corridor 図共通の地図背景 + 軸設定 (経路 x 範囲 +0.8 m マージンにクロップ)。"""
+    ax.imshow(img, cmap="gray", vmin=0, vmax=255, origin="upper", extent=extent,
+              interpolation="nearest", zorder=0)
+    ax.set_xlim(plan_xy[:, 0].min() - 0.8, plan_xy[:, 0].max() + 0.8)
+    ax.set_ylim(extent[2], extent[3])
+    ax.set_aspect("equal")
+    ax.set_ylabel("$y$ [m]")
+
+
 # ---------------------------------------------------------------- exp1
 
 def run_exp1(frozen_dir: Path, revision_dir: Path, out_dir: Path, summary, exp1_subdir="exp1_mppi"):
@@ -194,56 +296,17 @@ def run_exp1(frozen_dir: Path, revision_dir: Path, out_dir: Path, summary, exp1_
         table = table.reindex(columns=[c for c in col_order if c in table.columns])
         write_table(table, out_dir, name)
 
-    # ---- figures
+    # ---- figures (論文 Fig 7-9 スタイル: 全試行の経路比較 + MPPI 速度プロファイル)
     rep_idx = 3  # ノートブック踏襲: 4番目の試行を代表に(足りなければ末尾)
     for path_name in PATH_LIST:
-        # path comparison overlay
-        fig, ax = plt.subplots(figsize=(6.5, 6.5))
-        ref = al.reference_path[path_name]
-        ax.plot(ref[:, 1], -ref[:, 0], "k--", label="Reference Path", linewidth=1, alpha=0.7)
-        for controller in controllers:
-            trials = all_data[path_name].get(controller, [])
-            if not trials:
-                continue
-            tr = trials[min(rep_idx, len(trials) - 1)]
-            ax.plot(tr["y"], -tr["x"], color=al.color_dict[controller], label=controller, linewidth=1)
-        ax.set_xlabel("$x$ [m]")
-        ax.set_ylabel("$y$ [m]")
-        ax.grid(True, alpha=0.3)
-        ax.set_aspect("equal")
-        ax.invert_xaxis()
-        ax.invert_yaxis()
-        ax.legend()
-        fig.tight_layout()
-        for ext in ("pdf", "png"):
-            fig.savefig(out_dir / f"exp1_{path_name}_path_comparison.{ext}", dpi=300, bbox_inches="tight")
-        plt.close(fig)
-
-        # velocity profiles (MPPI のみ新規。凍結分は既存図があるため省略)
+        plot_path_comparison_paper(path_name, all_data, controllers, out_dir)
         for controller in [c for c in controllers if c == "MPPI"]:
             trials = all_data[path_name].get(controller, [])
             if not trials:
                 continue
             tr = trials[min(rep_idx, len(trials) - 1)]
-            df_t = tr["df"]
-            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(8, 3))
-            ax1.plot(tr["t"], df_t["v_cmd"], "-", color="red", label="Reference", linewidth=1, alpha=0.8)
-            ax1.plot(tr["t"], df_t["v_real"], "-", color="blue", label="Actual", linewidth=1)
-            ax1.axhline(y=V_MAX, color="black", linestyle="--", linewidth=2, alpha=0.7)
-            ax1.set_xlabel("Time [s]")
-            ax1.set_ylabel("Linear Velocity [m/s]")
-            ax1.grid(True, alpha=0.3)
-            ax2.plot(tr["t"], df_t["w_cmd"], "-", color="red", linewidth=1, alpha=0.8)
-            ax2.plot(tr["t"], df_t["w_real"], "-", color="blue", linewidth=1)
-            ax2.axhline(y=W_MAX, color="black", linestyle="--", linewidth=2, alpha=0.7)
-            ax2.axhline(y=-W_MAX, color="black", linestyle="--", linewidth=2, alpha=0.7)
-            ax2.set_xlabel("Time [s]")
-            ax2.set_ylabel("Angular Velocity [rad/s]")
-            ax2.grid(True, alpha=0.3)
-            fig.tight_layout()
-            for ext in ("pdf", "png"):
-                fig.savefig(out_dir / f"exp1_{path_name}_{controller}_velocity.{ext}", dpi=300, bbox_inches="tight")
-            plt.close(fig)
+            plot_velocity_profile_paper(tr, path_name, controller, out_dir)
+    make_path_comparison_legend(controllers, out_dir)
     log(f"  exp1 figures written to {out_dir}", summary)
 
 
@@ -304,9 +367,9 @@ def run_timing(revision_dir: Path, out_dir: Path, summary, timing_subdirs=None):
 # ---------------------------------------------------------------- exp2
 
 def run_exp2(revision_dir: Path, out_dir: Path, summary, exp2_dir: Path = None, plan_csv: Path = None,
-             label: str = EXP2_PATH_LABEL):
+             map_yaml: Path = None, label: str = EXP2_PATH_LABEL):
     log("== exp2: obstacle corridor (RPP vs DWPP, proximity heuristic ON) ==", summary)
-    base = exp2_dir if exp2_dir is not None else revision_dir / "exp2_obstacle"
+    base = exp2_dir if exp2_dir is not None else REPO_ROOT / "data" / "exp2_obstacle"
 
     if plan_csv is not None and Path(plan_csv).is_file():
         # 凍結済み map 座標系の参照経路 (実験で全試行に共通配信した fixed plan)
@@ -371,42 +434,124 @@ def run_exp2(revision_dir: Path, out_dir: Path, summary, exp2_dir: Path = None, 
     log("  NOTE: collision_flag は scan_min_dist < "
         f"{EXP2_COLLISION_DIST} m の自動判定。実験ノートの手動カウントと突き合わせること", summary)
 
-    # ---- key figure: v_cmd + dynamic window bounds + scan_min_dist + violation
-    n = sum(1 for t in all_trials.values() if t)
-    fig, axes = plt.subplots(n, 1, figsize=(8, 3.2 * n), sharex=False, squeeze=False)
-    row = 0
-    for controller in EXP2_CONTROLLERS:
-        trials = all_trials.get(controller, [])
-        if not trials:
-            continue
-        tr = trials[min(3, len(trials) - 1)]
+    # ---- figures
+    rep_trials = {c: trials[min(3, len(trials) - 1)]
+                  for c, trials in all_trials.items() if trials}
+
+    # (1)(2) 地図ベースの図は map.yaml と fixed_plan がある場合のみ
+    if map_yaml is not None and Path(map_yaml).is_file() and not anchor:
+        img, extent = load_occupancy_map(Path(map_yaml))
+        plot_corridor_map_plan(reference, img, extent, out_dir, stem)
+        plot_corridor_speed_colored(rep_trials, reference, img, extent, out_dir, stem)
+    else:
+        log(f"  WARN: map yaml missing or no fixed plan ({map_yaml}) - "
+            "map-based corridor figures skipped", summary)
+
+    # (3) 速度指令・曲率指令・障害物距離の 2x3 パネル
+    plot_corridor_vcmd_panels(rep_trials, out_dir, stem)
+    log(f"  exp2 figures written to {out_dir}", summary)
+
+
+def plot_corridor_map_plan(plan_xy, img, extent, out_dir, stem):
+    """実②の設定図: 占有格子地図 + 大域経路 (fixed plan) + start/goal。"""
+    fig, ax = plt.subplots(figsize=(8, 2.8))
+    draw_corridor_map(ax, img, extent, plan_xy)
+    ax.plot(plan_xy[:, 0], plan_xy[:, 1], "k--", linewidth=1.5, label="Reference path", zorder=2)
+    ax.plot(plan_xy[0, 0], plan_xy[0, 1], "o", color="limegreen", mec="black", ms=8,
+            zorder=4, label="Start")
+    ax.plot(plan_xy[-1, 0], plan_xy[-1, 1], "*", color="red", mec="black", ms=12,
+            zorder=4, label="Goal")
+    ax.set_xlabel("$x$ [m]")
+    ax.legend(loc="upper right", fontsize=10, framealpha=0.9)
+    fig.tight_layout()
+    for ext in ("pdf", "png"):
+        fig.savefig(out_dir / f"{stem}_map_plan.{ext}", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_corridor_speed_colored(rep_trials, plan_xy, img, extent, out_dir, stem):
+    """実②の追従軌跡を実現速度 v_real で色付けした図 (RPP 上段 / DWPP 下段)。"""
+    controllers = [c for c in EXP2_CONTROLLERS if c in rep_trials]
+    fig, axes = plt.subplots(len(controllers), 1, figsize=(8, 2.6 * len(controllers)),
+                             sharex=True, sharey=True, squeeze=False,
+                             layout="constrained")
+    norm = plt.Normalize(0.0, V_MAX)
+    lc = None
+    for row, controller in enumerate(controllers):
+        tr = rep_trials[controller]
+        ax = axes[row][0]
+        draw_corridor_map(ax, img, extent, plan_xy)
+        ax.plot(plan_xy[:, 0], plan_xy[:, 1], "k--", linewidth=1, alpha=0.7, zorder=2)
+        v = tr["df"]["v_real"].to_numpy(dtype=float)
+        pts = np.column_stack([tr["x"], tr["y"]]).reshape(-1, 1, 2)
+        segs = np.concatenate([pts[:-1], pts[1:]], axis=1)
+        seg_v = 0.5 * (v[:-1] + v[1:])
+        ok = np.isfinite(seg_v) & np.isfinite(segs).all(axis=(1, 2))
+        lc = LineCollection(segs[ok], cmap="viridis", norm=norm, linewidth=2.5,
+                            capstyle="round", zorder=3)
+        lc.set_array(seg_v[ok])
+        ax.add_collection(lc)
+        ax.set_title(controller, loc="left", fontsize=12)
+    axes[-1][0].set_xlabel("$x$ [m]")
+    fig.colorbar(lc, ax=[axes[r][0] for r in range(len(controllers))],
+                 orientation="vertical", fraction=0.03, pad=0.02,
+                 label="Linear velocity [m/s]")
+    for ext in ("pdf", "png"):
+        fig.savefig(out_dir / f"{stem}_speed_colored.{ext}", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_corridor_vcmd_panels(rep_trials, out_dir, stem):
+    """実②のキー図: 行=コントローラ (RPP/DWPP)、列=(1) 線速度指令+実現+動的窓
+    (2) 曲率指令 kappa = w_cmd/v_cmd (3) 最小障害物距離。横軸は時間。"""
+    controllers = [c for c in EXP2_CONTROLLERS if c in rep_trials]
+    fig, axes = plt.subplots(len(controllers), 3, figsize=(10, 2.4 * len(controllers)),
+                             sharex="row", squeeze=False)
+    for row, controller in enumerate(controllers):
+        tr = rep_trials[controller]
         df_t, t = tr["df"], tr["t"]
+        color = al.color_dict[controller]
+
         ax = axes[row][0]
         ax.fill_between(t, df_t["dw_v_min"], df_t["dw_v_max"], color="gray", alpha=0.3,
-                        label="Dynamic window (feasible $v$)")
-        ax.plot(t, df_t["v_cmd"], color=al.color_dict[controller], linewidth=1.2,
-                label=f"{controller} $v_\\mathrm{{cmd}}$")
+                        label="Dynamic window")
+        ax.plot(t, df_t["v_cmd"], color=color, linewidth=1.2, label="$v_\\mathrm{cmd}$")
+        ax.plot(t, df_t["v_real"], color="blue", linewidth=1, alpha=0.9,
+                label="$v_\\mathrm{real}$")
         viol = df_t["velocity_violation"].to_numpy().astype(bool)
         if viol.any():
             ax.scatter(t[viol], df_t["v_cmd"].to_numpy()[viol], s=8, color="black",
-                       zorder=5, label="Constraint violation")
-        if "scan_min_dist" in df_t.columns:
-            ax2 = ax.twinx()
-            ax2.plot(t, df_t["scan_min_dist"], color="teal", linewidth=0.8, alpha=0.7)
-            ax2.set_ylabel("Min. scan distance [m]", color="teal")
-            ax2.tick_params(axis="y", labelcolor="teal")
+                       zorder=5, label="Violation")
         ax.axhline(y=V_MAX, color="black", linestyle="--", linewidth=1, alpha=0.5)
-        ax.set_ylabel("Linear velocity [m/s]")
-        ax.set_xlabel("Time [s]")
-        ax.grid(True, alpha=0.3)
-        ax.legend(loc="upper right", fontsize=9)
-        ax.set_title(f"{controller} (proximity heuristic ON)")
-        row += 1
+        ax.set_ylabel(f"{controller}\nLinear velocity [m/s]")
+        ax.legend(loc="lower center", fontsize=7, ncol=2, framealpha=0.9)
+
+        ax = axes[row][1]
+        v_cmd = df_t["v_cmd"].to_numpy(dtype=float)
+        w_cmd = df_t["w_cmd"].to_numpy(dtype=float)
+        kappa = np.where(np.abs(v_cmd) >= 0.05,
+                         w_cmd / np.where(v_cmd == 0.0, np.nan, v_cmd), np.nan)
+        ax.plot(t, kappa, color=color, linewidth=1.2)
+        ax.set_ylabel("Commanded curvature [1/m]")
+        ax.set_ylim(-1.2, 1.2)
+
+        ax = axes[row][2]
+        ax.plot(t, df_t["scan_min_dist"], color="teal", linewidth=1.2)
+        ax.axhline(y=0.6, color="gray", linestyle="--", linewidth=1,
+                   label="$d_\\mathrm{prox}$")
+        ax.set_ylabel("Min. obstacle distance [m]")
+        ax.set_ylim(bottom=0)
+        if row == 0:
+            ax.legend(loc="upper right", fontsize=8)
+
+        for col in range(3):
+            axes[row][col].grid(True, alpha=0.3)
+            if row == len(controllers) - 1:
+                axes[row][col].set_xlabel("Time [s]")
     fig.tight_layout()
     for ext in ("pdf", "png"):
         fig.savefig(out_dir / f"{stem}_vcmd_window.{ext}", dpi=300, bbox_inches="tight")
     plt.close(fig)
-    log(f"  exp2 figures written to {out_dir}", summary)
 
 
 # ---------------------------------------------------------------- main
@@ -420,15 +565,15 @@ def main():
                         help="revision 実験データルート (exp1_mppi / exp2_obstacle)")
     parser.add_argument("--out-dir", type=Path, default=None,
                         help="出力先 (default: <revision-dir>/paper_outputs)")
-    parser.add_argument("--only", choices=["exp1", "exp2", "timing"], action="append",
-                        help="指定セクションのみ実行(複数指定可)")
+    parser.add_argument("--only", choices=["exp1", "exp2", "timing", "legends"], action="append",
+                        help="指定セクションのみ実行(複数指定可)。legends は共有凡例のみ再生成")
     parser.add_argument("--exp1-subdir", default="exp1_mppi_viz_off",
                         help="revision-dir 配下の MPPI 追従データのサブディレクトリ")
     parser.add_argument("--timing-subdirs", nargs="+",
                         default=["exp1_mppi_viz_off", "exp1_mppi_pp_time"],
                         help="計時集計に含めるサブディレクトリ (viz_on や old を除外するため明示)")
-    parser.add_argument("--exp2-dir", type=Path, default=None,
-                        help="実②データディレクトリ (default: <revision-dir>/exp2_obstacle)")
+    parser.add_argument("--exp2-dir", type=Path, default=REPO_ROOT / "data" / "exp2_obstacle",
+                        help="実②データディレクトリ")
     parser.add_argument("--exp2-label", default="Corridor",
                         help="実②のコースラベル (サブディレクトリ名, e.g. Corridor / Corridor_R1.5)")
     parser.add_argument("--exp2-plan", type=Path,
@@ -436,6 +581,8 @@ def main():
                         / "worlds" / "corridor" / "map" / "fixed_plan.csv",
                         help="実②の凍結参照経路 CSV (map 座標系, columns x,y[,yaw])。"
                              "見つからない場合は直線コリドー参照にフォールバック")
+    parser.add_argument("--exp2-map", type=Path, default=None,
+                        help="実②の占有格子地図 map.yaml (default: --exp2-plan と同ディレクトリの map.yaml)")
     args = parser.parse_args()
 
     out_dir = args.out_dir or (args.revision_dir / "paper_outputs")
@@ -447,13 +594,19 @@ def main():
     log(f"revision_dir : {args.revision_dir}", summary)
     log(f"out_dir      : {out_dir}", summary)
 
+    exp2_map = args.exp2_map or args.exp2_plan.parent / "map.yaml"
+
     if "exp1" in sections:
         run_exp1(args.frozen_dir, args.revision_dir, out_dir, summary, exp1_subdir=args.exp1_subdir)
     if "timing" in sections:
         run_timing(args.revision_dir, out_dir, summary, timing_subdirs=args.timing_subdirs)
     if "exp2" in sections:
         run_exp2(args.revision_dir, out_dir, summary,
-                 exp2_dir=args.exp2_dir, plan_csv=args.exp2_plan, label=args.exp2_label)
+                 exp2_dir=args.exp2_dir, plan_csv=args.exp2_plan, map_yaml=exp2_map,
+                 label=args.exp2_label)
+    if "legends" in sections and "exp1" not in sections:
+        make_path_comparison_legend(FROZEN_CONTROLLERS + ["MPPI"], out_dir)
+        log("== legends: path_comparison_label regenerated ==", summary)
 
     (out_dir / "summary.txt").write_text("\n".join(summary) + "\n")
     print(f"\nDone. Outputs in {out_dir} (see summary.txt)")
