@@ -487,7 +487,7 @@ def plot_corridor_speed_colored(rep_trials, plan_xy, img, extent, out_dir, stem)
         segs = np.concatenate([pts[:-1], pts[1:]], axis=1)
         seg_v = 0.5 * (v[:-1] + v[1:])
         ok = np.isfinite(seg_v) & np.isfinite(segs).all(axis=(1, 2))
-        lc = LineCollection(segs[ok], cmap="viridis", norm=norm, linewidth=2.5,
+        lc = LineCollection(segs[ok], cmap="turbo", norm=norm, linewidth=2.5,
                             capstyle="round", zorder=3)
         lc.set_array(seg_v[ok])
         ax.add_collection(lc)
@@ -532,8 +532,15 @@ def plot_corridor_vcmd_panels(rep_trials, out_dir, stem):
         kappa = np.where(np.abs(v_cmd) >= 0.05,
                          w_cmd / np.where(v_cmd == 0.0, np.nan, v_cmd), np.nan)
         ax.plot(t, kappa, color=color, linewidth=1.2)
+        # 曲率ヒューリスティック閾値 |kappa| = 1/R_min (R_min = 0.9 m)
+        kappa_th = 1.0 / 0.9
+        ax.axhline(y=kappa_th, color="gray", linestyle="--", linewidth=1,
+                   label="$\\pm 1/R_\\mathrm{min}$")
+        ax.axhline(y=-kappa_th, color="gray", linestyle="--", linewidth=1)
         ax.set_ylabel("Commanded curvature [1/m]")
-        ax.set_ylim(-1.2, 1.2)
+        ax.set_ylim(-1.3, 1.3)
+        if row == 0:
+            ax.legend(loc="lower right", fontsize=8)
 
         ax = axes[row][2]
         ax.plot(t, df_t["scan_min_dist"], color="teal", linewidth=1.2)
