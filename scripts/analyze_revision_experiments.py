@@ -133,22 +133,43 @@ def collect_trials(base_dir: Path, path_name: str, controller: str, reference, s
 
 # ---------------------------------------------------- paper-style figure helpers
 
+# (a) 経路比較図のパネル構成: A/B は手法ごとに5枚横並び、C は PP family + MPPI の2枚
+PATH_COMPARISON_LAYOUTS = {
+    "PathA": [["PP"], ["APP"], ["RPP"], ["DWPP"], ["MPPI"]],
+    "PathB": [["PP"], ["APP"], ["RPP"], ["DWPP"], ["MPPI"]],
+    "PathC": [["PP", "APP", "RPP", "DWPP"], ["MPPI"]],
+}
+
+
 def plot_path_comparison_paper(path_name, all_data, controllers, out_dir):
-    """論文 Fig 7-9(a) と同一スタイル (notebook cell 11 準拠) の経路比較図。
-    全コントローラ x 全試行を重ね書きし、参照経路を最後(最前面)に描く。
-    凡例は別ファイル path_comparison_label.png (make_path_comparison_legend)。"""
-    fig = plt.figure(figsize=(3, 3))
-    ax = fig.add_subplot(111)
-    for controller in controllers:
-        for tr in all_data[path_name].get(controller, []):
-            ax.plot(tr["y"], tr["x"], color=al.color_dict[controller], linewidth=0.5)
+    """論文 Fig 7-9(a) の経路比較図 (notebook cell 11 の描画規約を踏襲)。
+    PATH_COMPARISON_LAYOUTS に従いパネル分割し、各パネルに該当手法の全試行と
+    参照経路 (最前面) を描く。凡例は別ファイル path_comparison_label.png。"""
+    layout = PATH_COMPARISON_LAYOUTS.get(path_name, [[c] for c in controllers])
+    groups = [[c for c in g if c in controllers] for g in layout]
+    groups = [g for g in groups if g]
     ref = al.reference_path[path_name]
-    ax.plot(ref[:, 1], ref[:, 0], "k--", linewidth=1, alpha=0.7)
-    ax.set_xlabel("$y$ [m]")
-    ax.set_ylabel("$x$ [m]")
-    ax.grid(True, alpha=0.3)
-    ax.set_aspect("equal")
-    ax.invert_xaxis()
+
+    # 参照経路レンジから equal-aspect 前提の figsize を決める (高さ 4.2 in 基準)
+    pad = 0.6
+    x_range = float(ref[:, 0].max() - ref[:, 0].min()) + 2 * pad
+    y_range = float(ref[:, 1].max() - ref[:, 1].min()) + 2 * pad
+    height = 3.2
+    panel_w = height * y_range / x_range
+    fig, axes = plt.subplots(1, len(groups),
+                             figsize=(panel_w * len(groups) + 0.9, height + 0.5),
+                             sharex=True, sharey=True, squeeze=False)
+    for ax, group in zip(axes[0], groups):
+        for controller in group:
+            for tr in all_data[path_name].get(controller, []):
+                ax.plot(tr["y"], tr["x"], color=al.color_dict[controller], linewidth=0.5)
+        ax.plot(ref[:, 1], ref[:, 0], "k--", linewidth=1, alpha=0.7)
+        ax.set_title(group[0] if len(group) == 1 else "PP family")
+        ax.grid(True, alpha=0.3)
+        ax.set_aspect("equal")
+    axes[0][0].invert_xaxis()  # sharex なので全パネルに適用される
+    axes[0][0].set_ylabel("$x$ [m]")
+    fig.supxlabel("$y$ [m]")
     fig.tight_layout()
     for ext in ("pdf", "png"):
         fig.savefig(out_dir / f"{path_name}_path_comparison.{ext}", dpi=300, bbox_inches="tight")
