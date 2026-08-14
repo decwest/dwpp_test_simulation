@@ -19,7 +19,7 @@
 #          (measured scan_min_dist: min ~0.4, median ~0.7) = inflation_radius
 #        - r_min 1.50 > tightest weave turning radius (~0.8-1.0 m), so the
 #          curvature heuristic activates in every turn (~20% of cycles)
-#      Course geometry follows the paper: 1.5 m corridor, ~0.7 m obstacles.
+#      Course geometry: about 2.0 m corridor, ~1.0 m obstacles, 10 m NavFn path.
 # Launch: ros2 launch ytlab2_whill_modules dwpp_experiment.launch.py \
 #   params_path:=/home/ubuntu/ros2_ws/src/dwpp_test_simulation/params/revision_exp2_obstacle_params.yaml \
 #   path_set:=corridor
