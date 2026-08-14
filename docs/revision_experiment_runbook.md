@@ -76,15 +76,17 @@ launch に組み込みの `nav2_bringup_watchdog`(起動20秒後に動作)が未
 
 ### コース設営(RPP 論文 confined corridor 踏襲)
 
-- 幅 **1.5 m** の通路(パネル/段ボール壁)× 長さ 9 m 強。
-- 障害物 3 個(幅 ~**0.7 m**、段ボール等の軟質物)を **s ≈ 2.0 / 4.5 / 7.0 m** に左右交互に配置。
+- 幅 **1.5 m** の通路(パネル/段ボール壁)。
+- 障害物 3 個(幅 ~**0.7 m**、段ボール等の軟質物)を左右交互に配置。
 - 経路(通路中心線)との側方クリアランス ~**0.3 m**(cost_scaling_dist 0.6 未満 → 減速発動、robot_radius 0.22 超 → 経路上は接触なし)。
-- 障害物はライブスキャンで local costmap に入るため**静的マップの変更・再作成は不要**。
+- 障害物への局所的な反応はライブスキャンで local costmap に入る。作成済みの
+  `worlds/corridor/map/map.yaml` は AMCL と NavFn の大域計画に使用する。
 
 ### 起動
 
 ```bash
 ros2 launch ytlab2_whill_modules dwpp_experiment.launch.py \
+  map_path:=/home/ubuntu/ros2_ws/src/ytlab2_whill_modules/worlds/corridor/map/map.yaml \
   params_path:=/home/ubuntu/ros2_ws/src/dwpp_test_simulation/params/revision_exp2_obstacle_params.yaml \
   experiment_name:=real_robot_experiment_revision/exp2_obstacle \
   path_set:=corridor
@@ -92,6 +94,12 @@ ros2 launch ytlab2_whill_modules dwpp_experiment.launch.py \
 
 チェック: `ros2 param get /controller_server controller_plugins` → `['RPP','DWPP']`、
 `ros2 param get /controller_server RPP.use_cost_regulated_linear_velocity_scaling` → `true`。
+
+`Corridor` の初回実行時だけ、NavFn が map 座標の `(0,0,0)` から
+ゴール姿勢 `(10.0,-0.2,0 deg)` までを計画し、
+`worlds/corridor/map/fixed_plan.csv` に保存する。以後は再計画せず、RPP と
+DWPP の全試行でこの CSV を読み込んだ同一経路を使用する。地図を変更して
+再計画する場合は、既存の `fixed_plan.csv` を退避してから起動する。
 
 ### ⚠️ 安全(重要)
 

@@ -59,6 +59,7 @@ from rclpy.qos import (
 # =========================
 # ROS 2 Messages
 # =========================
+from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import (
     Point,
     PoseStamped,
@@ -66,9 +67,9 @@ from geometry_msgs.msg import (
     Twist,
     Quaternion,
 )
-from nav_msgs.msg import Path, Odometry
+from nav_msgs.msg import Odometry, Path
+from nav2_msgs.action import ComputePathToPose, FollowPath
 from sensor_msgs.msg import BatteryState, Imu, LaserScan
-from nav2_msgs.action import FollowPath
 from visualization_msgs.msg import Marker, MarkerArray
 
 # ControllerComputation is only present on the Decwest navigation2 fork
@@ -208,24 +209,55 @@ def make_iso_path(frame_id: str) -> tuple:
     return (paths[0], paths[1], paths[2])
 
 
-def make_corridor_path(frame_id: str, length: float = 9.0, n_points: int = 900) -> Path:
-    """
-    実②(障害物環境)用: 直線参照経路(コリドー中心線)を生成する。
-    900点/9m = 1cm間隔で make_path と同じ点密度。
-    """
-    xs = np.linspace(0.0, length, n_points)
-
+def load_map_path_csv(csv_path: str, frame_id: str = "map") -> Path:
+    """保存済みの map 座標経路 (x,y,yaw CSV) を読み込む。"""
     path = Path()
     path.header.frame_id = frame_id
-    for x in xs:
-        ps = PoseStamped()
-        ps.header.frame_id = frame_id
-        ps.pose.position.x = float(x)
-        ps.pose.position.y = 0.0
-        ps.pose.orientation.z = 0.0
-        ps.pose.orientation.w = 1.0
-        path.poses.append(ps)
+    with open(csv_path, newline="", encoding="utf-8") as csvfile:
+        reader = csv.DictReader(csvfile)
+        required = {"x", "y", "yaw"}
+        if not required.issubset(reader.fieldnames or []):
+            raise RuntimeError(
+                f"fixed plan {csv_path} must contain columns x,y,yaw"
+            )
+        for row in reader:
+            x, y, yaw = float(row["x"]), float(row["y"]), float(row["yaw"])
+            if not all(math.isfinite(value) for value in (x, y, yaw)):
+                raise RuntimeError(f"fixed plan {csv_path} contains non-finite values")
+            ps = PoseStamped()
+            ps.header.frame_id = frame_id
+            ps.pose.position.x = x
+            ps.pose.position.y = y
+            _, _, ps.pose.orientation.z, ps.pose.orientation.w = yaw_to_quat(yaw)
+            path.poses.append(ps)
+    if len(path.poses) < 2:
+        raise RuntimeError(f"fixed plan {csv_path} has fewer than 2 poses")
     return path
+
+
+def save_map_path_csv(path: Path, csv_path: str):
+    """NavFn の map 座標経路を x,y,yaw CSV として原子的に保存する。"""
+    if len(path.poses) < 2:
+        raise RuntimeError("NavFn returned fewer than 2 poses")
+    parent = os.path.dirname(os.path.abspath(csv_path))
+    os.makedirs(parent, exist_ok=True)
+    temporary = f"{csv_path}.tmp.{os.getpid()}"
+    try:
+        with open(temporary, "w", newline="", encoding="utf-8") as csvfile:
+            writer = csv.writer(csvfile)
+            writer.writerow(["x", "y", "yaw"])
+            for ps in path.poses:
+                writer.writerow([
+                    float(ps.pose.position.x),
+                    float(ps.pose.position.y),
+                    quat_to_yaw(ps.pose.orientation),
+                ])
+        os.replace(temporary, csv_path)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
 
 
 def build_local_paths(path_set: str, frame_id: str) -> dict:
@@ -241,7 +273,8 @@ def build_local_paths(path_set: str, frame_id: str) -> dict:
         a, b, c = make_iso_path(frame_id)
         return {"ISO_Straight": a, "ISO_Square": b, "ISO_Arc": c}
     if path_set == "corridor":
-        return {"Corridor": make_corridor_path(frame_id)}
+        # Corridor は初回送信時に NavFn で生成し、map 座標の固定経路として保存する。
+        return {"Corridor": Path()}
     raise ValueError(f"unknown path_set: {path_set!r} (expected polyline / iso / corridor)")
 
 
@@ -363,9 +396,28 @@ class FollowPathClient(Node):
         self.experiment_name = self.declare_parameter(
             "experiment_name", "real_robot_experiment_revision/scratch"
         ).value
-        # 経路セット: polyline (45/90/135度折れ線) / iso / corridor (実②直線)
+        # 経路セット: polyline (45/90/135度折れ線) / iso /
+        # corridor (NavFn 固定大域経路)
         self.path_set = self.declare_parameter("path_set", "polyline").value
         self.scan_topic = self.declare_parameter("scan_topic", "/merged_scan_filtered").value
+        self.corridor_plan_file = self.declare_parameter(
+            "corridor_plan_file",
+            "/home/ubuntu/ros2_ws/src/ytlab2_whill_modules/"
+            "worlds/corridor/map/fixed_plan.csv",
+        ).value
+        self.corridor_planner_id = self.declare_parameter(
+            "corridor_planner_id", "GridBased"
+        ).value
+        self.corridor_start = (
+            float(self.declare_parameter("corridor_start_x", 0.0).value),
+            float(self.declare_parameter("corridor_start_y", 0.0).value),
+            math.radians(float(self.declare_parameter("corridor_start_yaw_deg", 0.0).value)),
+        )
+        self.corridor_goal = (
+            float(self.declare_parameter("corridor_goal_x", 10.0).value),
+            float(self.declare_parameter("corridor_goal_y", -0.2).value),
+            math.radians(float(self.declare_parameter("corridor_goal_yaw_deg", 0.0).value)),
+        )
 
         # 制約値(コントローラ非依存の violation / dynamic window 計算に使用)。
         # controller_server 側のプラグイン設定と一致させること。
@@ -395,6 +447,8 @@ class FollowPathClient(Node):
         self._traj_lock = threading.Lock()
         self._record_lock = threading.Lock()
         self._controller_id = None
+        self._corridor_map_path = None
+        self._corridor_plan_request = None
 
         # start_origin (map基準) = 追従開始時のロボット姿勢
         self.start_origin_t_map = None  # np.array([x,y,z])
@@ -458,8 +512,25 @@ class FollowPathClient(Node):
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
-        # --- Action Client ---
+        # --- Action Clients ---
         self._client = ActionClient(self, FollowPath, "/follow_path")
+        self._planner_client = ActionClient(
+            self, ComputePathToPose, "/compute_path_to_pose"
+        )
+
+        if self.path_set == "corridor" and os.path.exists(self.corridor_plan_file):
+            try:
+                self._corridor_map_path = load_map_path_csv(
+                    self.corridor_plan_file, self.map_frame_id
+                )
+                self.get_logger().info(
+                    f"Loaded fixed NavFn corridor plan: {self.corridor_plan_file} "
+                    f"({len(self._corridor_map_path.poses)} poses)"
+                )
+            except Exception as exc:
+                self.get_logger().error(
+                    f"Failed to load fixed corridor plan {self.corridor_plan_file}: {exc}"
+                )
 
         # --- Publishers ---
         self._initpose_pub = self.create_publisher(PoseWithCovarianceStamped, "initialpose", 10)
@@ -844,6 +915,112 @@ class FollowPathClient(Node):
     # Action Client Logic (FollowPath)
     # =========================================================================
 
+    def _make_corridor_plan_goal(self):
+        """現在の終端 base_footprint 姿勢への明示始点つき NavFn goal を作る。"""
+        goal = ComputePathToPose.Goal()
+        stamp = self.get_clock().now().to_msg()
+        sx, sy, syaw = self.corridor_start
+        gx, gy, gyaw = self.corridor_goal
+
+        goal.start.header.frame_id = self.map_frame_id
+        goal.start.header.stamp = stamp
+        goal.start.pose.position.x = sx
+        goal.start.pose.position.y = sy
+        _, _, goal.start.pose.orientation.z, goal.start.pose.orientation.w = yaw_to_quat(syaw)
+        goal.goal.header.frame_id = self.map_frame_id
+        goal.goal.header.stamp = stamp
+        goal.goal.pose.position.x = gx
+        goal.goal.pose.position.y = gy
+        _, _, goal.goal.pose.orientation.z, goal.goal.pose.orientation.w = yaw_to_quat(gyaw)
+        goal.planner_id = self.corridor_planner_id
+        goal.use_start = True
+        return goal
+
+    def _send_corridor_path(self, path_name: str, controller_id: str, goal_checker_id: str):
+        """固定経路を再利用し、未作成なら初回だけ NavFn で計画する。"""
+        if self._corridor_map_path is not None:
+            self._send_map_path(
+                self._corridor_map_path, path_name, controller_id, goal_checker_id
+            )
+            return
+
+        if os.path.exists(self.corridor_plan_file):
+            try:
+                self._corridor_map_path = load_map_path_csv(
+                    self.corridor_plan_file, self.map_frame_id
+                )
+            except Exception as exc:
+                self.get_logger().error(
+                    f"Failed to load fixed corridor plan {self.corridor_plan_file}: {exc}"
+                )
+                return
+            self._send_map_path(
+                self._corridor_map_path, path_name, controller_id, goal_checker_id
+            )
+            return
+
+        if self._corridor_plan_request is not None:
+            self.get_logger().warn("NavFn corridor planning is already in progress")
+            return
+        if not self._planner_client.wait_for_server(timeout_sec=2.0):
+            self.get_logger().error(
+                "Action server `/compute_path_to_pose` not available. "
+                "Wait for planner_server to become active and retry."
+            )
+            return
+
+        self._corridor_plan_request = (path_name, controller_id, goal_checker_id)
+        sx, sy, _ = self.corridor_start
+        gx, gy, _ = self.corridor_goal
+        self.get_logger().info(
+            f"Planning fixed corridor path once with {self.corridor_planner_id}: "
+            f"({sx:.3f}, {sy:.3f}) -> ({gx:.3f}, {gy:.3f})"
+        )
+        future = self._planner_client.send_goal_async(self._make_corridor_plan_goal())
+        future.add_done_callback(self._corridor_plan_goal_response_cb)
+
+    def _corridor_plan_goal_response_cb(self, future):
+        try:
+            goal_handle = future.result()
+        except Exception as exc:
+            self.get_logger().error(f"Failed to send NavFn goal: {exc}")
+            self._corridor_plan_request = None
+            return
+        if not goal_handle.accepted:
+            self.get_logger().error("NavFn corridor planning goal was rejected")
+            self._corridor_plan_request = None
+            return
+        result_future = goal_handle.get_result_async()
+        result_future.add_done_callback(self._corridor_plan_result_cb)
+
+    def _corridor_plan_result_cb(self, future):
+        request = self._corridor_plan_request
+        self._corridor_plan_request = None
+        try:
+            wrapped = future.result()
+            if (wrapped.status != GoalStatus.STATUS_SUCCEEDED
+                    or len(wrapped.result.path.poses) < 2):
+                self.get_logger().error(
+                    f"NavFn corridor planning failed (status={wrapped.status})"
+                )
+                return
+            save_map_path_csv(wrapped.result.path, self.corridor_plan_file)
+            # 保存した表現を読み直すことで、全コントローラ・全試行に完全に同じ
+            # map 座標 Path を渡す。
+            self._corridor_map_path = load_map_path_csv(
+                self.corridor_plan_file, self.map_frame_id
+            )
+            self.get_logger().info(
+                f"Saved fixed NavFn corridor plan: {self.corridor_plan_file} "
+                f"({len(self._corridor_map_path.poses)} poses)"
+            )
+        except Exception as exc:
+            self.get_logger().error(f"Failed to finish NavFn corridor planning: {exc}")
+            return
+
+        if request is not None:
+            self._send_map_path(self._corridor_map_path, *request)
+
     def send_path(self, local_path_msg: Path, path_name: str, controller_id: str, goal_checker_id: str):
         """
         local_path を受け取り、
@@ -852,10 +1029,8 @@ class FollowPathClient(Node):
         3) Nav2 へ送信
         4) RViz へも同一の map_path を描画（Nav2と一致）
         """
-        self.path_name = path_name
-
-        if not self._client.wait_for_server(timeout_sec=2.0):
-            self.get_logger().error("Action server `/follow_path` not available.")
+        if self.path_set == "corridor":
+            self._send_corridor_path(path_name, controller_id, goal_checker_id)
             return
 
         # 1) start_origin 確定
@@ -870,10 +1045,27 @@ class FollowPathClient(Node):
             self.get_logger().error(f"Failed to transform local path to map: {ex}")
             return
 
-        # 3) RVizへ「実際に送るmap_path」を描画
+        self._send_map_path(
+            map_path, path_name, controller_id, goal_checker_id,
+            refresh_start_origin=False,
+        )
+
+    def _send_map_path(self, map_path: Path, path_name: str,
+                       controller_id: str, goal_checker_id: str,
+                       refresh_start_origin: bool = True):
+        """準備済みの map 座標 Path を可視化・記録して FollowPath へ送る。"""
+        self.path_name = path_name
+        if not self._client.wait_for_server(timeout_sec=2.0):
+            self.get_logger().error("Action server `/follow_path` not available.")
+            return
+        if refresh_start_origin and not self._set_start_origin_to_current_robot_pose():
+            self.get_logger().error("Failed to set start origin (map->base TF unavailable).")
+            return
+
+        # RVizへ「実際に送るmap_path」を描画
         self.publish_active_path(map_path)
 
-        # 4) Nav2へ送信
+        # Nav2へ送信
         goal = FollowPath.Goal()
         goal.path = map_path
         goal.controller_id = controller_id
@@ -1125,6 +1317,11 @@ class FollowPathClient(Node):
         if time.time() < self._path_publish_ready_at:
             return
 
+        if self.path_set == "corridor":
+            if self._corridor_map_path is not None:
+                self.publish_paths_and_labels({"Corridor": self._corridor_map_path})
+            return
+
         t0 = self.start_origin_t_map
         r0 = self.start_origin_r_map
 
@@ -1204,8 +1401,11 @@ class AppGUI:
 
         tk.Label(frm_ctrl, text="Controller:").pack(side=tk.LEFT, padx=5)
 
-        self.controller_var = tk.StringVar(value="PP")
-        controllers = ["PP", "APP", "RPP", "DWPP", "MPPI"]
+        controllers = (
+            ["RPP", "DWPP"] if self.node.path_set == "corridor"
+            else ["PP", "APP", "RPP", "DWPP", "MPPI"]
+        )
+        self.controller_var = tk.StringVar(value=controllers[0])
         cb = ttk.Combobox(
             frm_ctrl,
             textvariable=self.controller_var,
@@ -1235,7 +1435,12 @@ class AppGUI:
         ).pack(side=tk.LEFT, padx=10)
 
         # 3. Path Selection
-        tk.Label(self.root, text="Select Path to Start (local path)").pack(pady=(20, 5))
+        path_label = (
+            "Select Path to Start (fixed NavFn path)"
+            if self.node.path_set == "corridor"
+            else "Select Path to Start (local path)"
+        )
+        tk.Label(self.root, text=path_label).pack(pady=(20, 5))
         frm_paths = tk.Frame(self.root)
         frm_paths.pack()
 
@@ -1291,7 +1496,7 @@ def main():
     rclpy.init()
 
     # ローカル経路は path_set パラメータからノード内で構築される
-    # (polyline: 45/90/135度折れ線 / iso / corridor: 実②直線)
+    # (polyline: 45/90/135度折れ線 / iso / corridor: NavFn 固定大域経路)
     node = FollowPathClient(local_path_frame_id="local_path")
 
     executor = MultiThreadedExecutor()
