@@ -388,7 +388,8 @@ def run_timing(revision_dir: Path, out_dir: Path, summary, timing_subdirs=None):
 # ---------------------------------------------------------------- exp2
 
 def run_exp2(revision_dir: Path, out_dir: Path, summary, exp2_dir: Path = None, plan_csv: Path = None,
-             map_yaml: Path = None, label: str = EXP2_PATH_LABEL):
+             map_yaml: Path = None, label: str = EXP2_PATH_LABEL,
+             r_min: float = 1.5, d_prox: float = 0.7):
     log("== exp2: obstacle corridor (RPP vs DWPP, proximity heuristic ON) ==", summary)
     base = exp2_dir if exp2_dir is not None else REPO_ROOT / "data" / "exp2_obstacle"
 
@@ -469,7 +470,7 @@ def run_exp2(revision_dir: Path, out_dir: Path, summary, exp2_dir: Path = None, 
             "map-based corridor figures skipped", summary)
 
     # (3) 速度指令・曲率指令・障害物距離の 2x3 パネル
-    plot_corridor_vcmd_panels(rep_trials, out_dir, stem)
+    plot_corridor_vcmd_panels(rep_trials, out_dir, stem, r_min=r_min, d_prox=d_prox)
     log(f"  exp2 figures written to {out_dir}", summary)
 
 
@@ -522,64 +523,62 @@ def plot_corridor_speed_colored(rep_trials, plan_xy, img, extent, out_dir, stem)
     plt.close(fig)
 
 
-def plot_corridor_vcmd_panels(rep_trials, out_dir, stem):
-    """実②のキー図: 行=コントローラ (RPP/DWPP)、列=(1) 線速度指令+実現+動的窓
-    (2) 曲率指令 kappa = w_cmd/v_cmd (3) 最小障害物距離。横軸は時間。"""
-    controllers = [c for c in EXP2_CONTROLLERS if c in rep_trials]
-    fig, axes = plt.subplots(len(controllers), 3, figsize=(10, 2.4 * len(controllers)),
-                             sharex="row", squeeze=False)
-    for row, controller in enumerate(controllers):
+def plot_corridor_vcmd_panels(rep_trials, out_dir, stem, r_min=1.5, d_prox=0.7):
+    """実②のキー図 (制御器ごとに1枚、1x3): (1) 速度指令(赤)+実現速度(青)、
+    ヒューリスティック発動区間の指令値は原因パネルと同色で上描き
+    (曲率=オレンジ、近接=teal、両方発動時は縮小率が小さい方)
+    (2) 曲率指令 kappa = w_cmd/v_cmd と閾値 ±1/R_min
+    (3) 最小障害物距離と cost-scaling 距離 d_prox。横軸は時間。"""
+    CURV_COLOR = "tab:orange"
+    PROX_COLOR = "teal"
+    for controller in EXP2_CONTROLLERS:
+        if controller not in rep_trials:
+            continue
         tr = rep_trials[controller]
         df_t, t = tr["df"], tr["t"]
-        color = al.color_dict[controller]
-
-        ax = axes[row][0]
-        ax.fill_between(t, df_t["dw_v_min"], df_t["dw_v_max"], color="gray", alpha=0.3,
-                        label="Dynamic window")
-        ax.plot(t, df_t["v_cmd"], color=color, linewidth=1.2, label="$v_\\mathrm{cmd}$")
-        ax.plot(t, df_t["v_real"], color="blue", linewidth=1, alpha=0.9,
-                label="$v_\\mathrm{real}$")
-        viol = df_t["velocity_violation"].to_numpy().astype(bool)
-        if viol.any():
-            ax.scatter(t[viol], df_t["v_cmd"].to_numpy()[viol], s=8, color="black",
-                       zorder=5, label="Violation")
-        ax.axhline(y=V_MAX, color="black", linestyle="--", linewidth=1, alpha=0.5)
-        ax.set_ylabel(f"{controller}\nLinear velocity [m/s]")
-        ax.legend(loc="lower center", fontsize=7, ncol=2, framealpha=0.9)
-
-        ax = axes[row][1]
         v_cmd = df_t["v_cmd"].to_numpy(dtype=float)
         w_cmd = df_t["w_cmd"].to_numpy(dtype=float)
+        v_real = df_t["v_real"].to_numpy(dtype=float)
+        dist = df_t["scan_min_dist"].to_numpy(dtype=float)
+
         kappa = np.where(np.abs(v_cmd) >= 0.05,
                          w_cmd / np.where(v_cmd == 0.0, np.nan, v_cmd), np.nan)
-        ax.plot(t, kappa, color=color, linewidth=1.2)
-        # 曲率ヒューリスティック閾値 |kappa| = 1/R_min (R_min = 0.9 m)
-        kappa_th = 1.0 / 0.9
-        ax.axhline(y=kappa_th, color="gray", linestyle="--", linewidth=1,
-                   label="$\\pm 1/R_\\mathrm{min}$")
-        ax.axhline(y=-kappa_th, color="gray", linestyle="--", linewidth=1)
-        ax.set_ylabel("Commanded curvature [1/m]")
-        ax.set_ylim(-1.3, 1.3)
-        if row == 0:
-            ax.legend(loc="lower right", fontsize=8)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            radius = np.where(np.abs(kappa) > 1e-6, 1.0 / np.abs(kappa), np.inf)
+        # 各ヒューリスティックの候補縮小率 (小さいほど強く効く)。非発動は inf
+        curv_scale = np.where(radius < r_min, radius / r_min, np.inf)
+        prox_scale = np.where(dist < d_prox, dist / d_prox, np.inf)
+        cause = np.zeros(len(t), dtype=int)  # 0: none, 1: curvature, 2: proximity
+        cause[(curv_scale < np.inf) & (curv_scale <= prox_scale)] = 1
+        cause[(prox_scale < np.inf) & (prox_scale < curv_scale)] = 2
 
-        ax = axes[row][2]
-        ax.plot(t, df_t["scan_min_dist"], color="teal", linewidth=1.2)
-        ax.axhline(y=0.6, color="gray", linestyle="--", linewidth=1,
-                   label="$d_\\mathrm{prox}$")
-        ax.set_ylabel("Min. obstacle distance [m]")
-        ax.set_ylim(bottom=0)
-        if row == 0:
-            ax.legend(loc="upper right", fontsize=8)
+        fig, (ax_v, ax_k, ax_d) = plt.subplots(1, 3, figsize=(10, 2.8))
 
-        for col in range(3):
-            axes[row][col].grid(True, alpha=0.3)
-            if row == len(controllers) - 1:
-                axes[row][col].set_xlabel("Time [s]")
-    fig.tight_layout()
-    for ext in ("pdf", "png"):
-        fig.savefig(out_dir / f"{stem}_vcmd_window.{ext}", dpi=300, bbox_inches="tight")
-    plt.close(fig)
+        ax_v.plot(t, v_real, color="blue", linewidth=1.0)
+        ax_v.plot(t, v_cmd, color="red", linewidth=1.2)
+        ax_v.plot(t, np.where(cause == 1, v_cmd, np.nan), color=CURV_COLOR, linewidth=2.0)
+        ax_v.plot(t, np.where(cause == 2, v_cmd, np.nan), color=PROX_COLOR, linewidth=2.0)
+        ax_v.set_ylabel("Linear velocity [m/s]")
+
+        ax_k.plot(t, kappa, color=CURV_COLOR, linewidth=1.2)
+        ax_k.axhline(y=1.0 / r_min, color="gray", linestyle="--", linewidth=1)
+        ax_k.axhline(y=-1.0 / r_min, color="gray", linestyle="--", linewidth=1)
+        ax_k.set_ylabel("Commanded curvature [1/m]")
+        ax_k.set_ylim(-1.5, 1.5)
+
+        ax_d.plot(t, dist, color=PROX_COLOR, linewidth=1.2)
+        ax_d.axhline(y=d_prox, color="gray", linestyle="--", linewidth=1)
+        ax_d.set_ylabel("Min. obstacle distance [m]")
+        ax_d.set_ylim(bottom=0)
+
+        for ax in (ax_v, ax_k, ax_d):
+            ax.grid(True, alpha=0.3)
+            ax.set_xlabel("Time [s]")
+        fig.tight_layout()
+        for ext in ("pdf", "png"):
+            fig.savefig(out_dir / f"{stem}_vcmd_{controller.lower()}.{ext}",
+                        dpi=300, bbox_inches="tight")
+        plt.close(fig)
 
 
 # ---------------------------------------------------------------- main
@@ -611,6 +610,10 @@ def main():
                              "見つからない場合は直線コリドー参照にフォールバック")
     parser.add_argument("--exp2-map", type=Path, default=None,
                         help="実②の占有格子地図 map.yaml (default: --exp2-plan と同ディレクトリの map.yaml)")
+    parser.add_argument("--exp2-rmin", type=float, default=1.5,
+                        help="実②の曲率ヒューリスティック閾値 R_min [m] (図の閾値線と原因色分けに使用)")
+    parser.add_argument("--exp2-dprox", type=float, default=0.7,
+                        help="実②の近接ヒューリスティック cost-scaling 距離 d_prox [m]")
     args = parser.parse_args()
 
     out_dir = args.out_dir or (args.revision_dir / "paper_outputs")
@@ -631,7 +634,7 @@ def main():
     if "exp2" in sections:
         run_exp2(args.revision_dir, out_dir, summary,
                  exp2_dir=args.exp2_dir, plan_csv=args.exp2_plan, map_yaml=exp2_map,
-                 label=args.exp2_label)
+                 label=args.exp2_label, r_min=args.exp2_rmin, d_prox=args.exp2_dprox)
     if "legends" in sections and "exp1" not in sections:
         make_path_comparison_legend(FROZEN_CONTROLLERS + ["MPPI"], out_dir)
         log("== legends: path_comparison_label regenerated ==", summary)
