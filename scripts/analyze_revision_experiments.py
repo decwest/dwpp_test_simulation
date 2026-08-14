@@ -524,9 +524,9 @@ def plot_corridor_speed_colored(rep_trials, plan_xy, img, extent, out_dir, stem)
 
 
 def plot_corridor_vcmd_panels(rep_trials, out_dir, stem, r_min=1.5, d_prox=0.7):
-    """実②のキー図 (制御器ごとに1枚、1x3): (1) 速度指令(赤)+実現速度(青)、
+    """実②のキー図 (制御器ごとにパネル別の3枚): (1) 速度指令(赤)+実現速度(青)、
     ヒューリスティック発動区間の指令値は原因パネルと同色で上描き
-    (曲率=オレンジ、近接=teal、両方発動時は縮小率が小さい方)
+    (曲率=オレンジ、近接=teal、両方発動時は縮小率が小さい方)。凡例付き
     (2) 曲率指令 kappa = w_cmd/v_cmd と閾値 ±1/R_min
     (3) 最小障害物距離と cost-scaling 距離 d_prox。横軸は時間。"""
     CURV_COLOR = "tab:orange"
@@ -545,38 +545,60 @@ def plot_corridor_vcmd_panels(rep_trials, out_dir, stem, r_min=1.5, d_prox=0.7):
                          w_cmd / np.where(v_cmd == 0.0, np.nan, v_cmd), np.nan)
         with np.errstate(divide="ignore", invalid="ignore"):
             radius = np.where(np.abs(kappa) > 1e-6, 1.0 / np.abs(kappa), np.inf)
-        # 各ヒューリスティックの候補縮小率 (小さいほど強く効く)。非発動は inf
         curv_scale = np.where(radius < r_min, radius / r_min, np.inf)
         prox_scale = np.where(dist < d_prox, dist / d_prox, np.inf)
-        cause = np.zeros(len(t), dtype=int)  # 0: none, 1: curvature, 2: proximity
+        cause = np.zeros(len(t), dtype=int)
         cause[(curv_scale < np.inf) & (curv_scale <= prox_scale)] = 1
         cause[(prox_scale < np.inf) & (prox_scale < curv_scale)] = 2
 
-        fig, (ax_v, ax_k, ax_d) = plt.subplots(1, 3, figsize=(10, 2.8))
-
-        ax_v.plot(t, v_real, color="blue", linewidth=1.0)
-        ax_v.plot(t, v_cmd, color="red", linewidth=1.2)
-        ax_v.plot(t, np.where(cause == 1, v_cmd, np.nan), color=CURV_COLOR, linewidth=2.0)
-        ax_v.plot(t, np.where(cause == 2, v_cmd, np.nan), color=PROX_COLOR, linewidth=2.0)
-        ax_v.set_ylabel("Linear velocity [m/s]")
-
-        ax_k.plot(t, kappa, color=CURV_COLOR, linewidth=1.2)
-        ax_k.axhline(y=1.0 / r_min, color="gray", linestyle="--", linewidth=1)
-        ax_k.axhline(y=-1.0 / r_min, color="gray", linestyle="--", linewidth=1)
-        ax_k.set_ylabel("Commanded curvature [1/m]")
-        ax_k.set_ylim(-1.5, 1.5)
-
-        ax_d.plot(t, dist, color=PROX_COLOR, linewidth=1.2)
-        ax_d.axhline(y=d_prox, color="gray", linestyle="--", linewidth=1)
-        ax_d.set_ylabel("Min. obstacle distance [m]")
-        ax_d.set_ylim(bottom=0)
-
-        for ax in (ax_v, ax_k, ax_d):
-            ax.grid(True, alpha=0.3)
-            ax.set_xlabel("Time [s]")
+        # (1) velocity profile with legend
+        fig, ax = plt.subplots(figsize=(3.4, 2.8))
+        ax.plot(t, v_real, color="blue", linewidth=1.0, label="Measured velocity")
+        ax.plot(t, v_cmd, color="red", linewidth=1.2, label="Command velocity")
+        ax.plot(t, np.where(cause == 1, v_cmd, np.nan), color=CURV_COLOR,
+                linewidth=2.0, label="Curvature heuristic")
+        ax.plot(t, np.where(cause == 2, v_cmd, np.nan), color=PROX_COLOR,
+                linewidth=2.0, label="Proximity heuristic")
+        ax.set_ylabel("Linear velocity [m/s]")
+        ax.set_xlabel("Time [s]")
+        ax.set_ylim(bottom=0)
+        ax.grid(True, alpha=0.3)
+        handles, labels = ax.get_legend_handles_labels()
+        order = [1, 0, 2, 3]
+        ax.legend([handles[i] for i in order], [labels[i] for i in order],
+                  loc="lower center", fontsize=7, ncol=2, framealpha=0.9)
         fig.tight_layout()
         for ext in ("pdf", "png"):
-            fig.savefig(out_dir / f"{stem}_vcmd_{controller.lower()}.{ext}",
+            fig.savefig(out_dir / f"{stem}_vcmd_{controller.lower()}_vel.{ext}",
+                        dpi=300, bbox_inches="tight")
+        plt.close(fig)
+
+        # (2) commanded curvature profile
+        fig, ax = plt.subplots(figsize=(3.4, 2.8))
+        ax.plot(t, kappa, color=CURV_COLOR, linewidth=1.2)
+        ax.axhline(y=1.0 / r_min, color="gray", linestyle="--", linewidth=1)
+        ax.axhline(y=-1.0 / r_min, color="gray", linestyle="--", linewidth=1)
+        ax.set_ylabel("Commanded curvature [1/m]")
+        ax.set_xlabel("Time [s]")
+        ax.set_ylim(-1.5, 1.5)
+        ax.grid(True, alpha=0.3)
+        fig.tight_layout()
+        for ext in ("pdf", "png"):
+            fig.savefig(out_dir / f"{stem}_vcmd_{controller.lower()}_curv.{ext}",
+                        dpi=300, bbox_inches="tight")
+        plt.close(fig)
+
+        # (3) obstacle distance profile
+        fig, ax = plt.subplots(figsize=(3.4, 2.8))
+        ax.plot(t, dist, color=PROX_COLOR, linewidth=1.2)
+        ax.axhline(y=d_prox, color="gray", linestyle="--", linewidth=1)
+        ax.set_ylabel("Min. obstacle distance [m]")
+        ax.set_xlabel("Time [s]")
+        ax.set_ylim(bottom=0)
+        ax.grid(True, alpha=0.3)
+        fig.tight_layout()
+        for ext in ("pdf", "png"):
+            fig.savefig(out_dir / f"{stem}_vcmd_{controller.lower()}_dist.{ext}",
                         dpi=300, bbox_inches="tight")
         plt.close(fig)
 
