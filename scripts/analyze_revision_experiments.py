@@ -492,16 +492,13 @@ def plot_corridor_map_plan(plan_xy, img, extent, out_dir, stem):
 
 
 def plot_corridor_speed_colored(rep_trials, plan_xy, img, extent, out_dir, stem):
-    """実②の追従軌跡を実現速度 v_real で色付けした図 (RPP 上段 / DWPP 下段)。"""
-    controllers = [c for c in EXP2_CONTROLLERS if c in rep_trials]
-    fig, axes = plt.subplots(len(controllers), 1, figsize=(8, 2.6 * len(controllers)),
-                             sharex=True, sharey=True, squeeze=False,
-                             layout="constrained")
+    """実②の追従軌跡を実現速度 v_real で色付けした図 (制御器ごとに1枚)。"""
     norm = plt.Normalize(0.0, V_MAX)
-    lc = None
-    for row, controller in enumerate(controllers):
+    for controller in EXP2_CONTROLLERS:
+        if controller not in rep_trials:
+            continue
         tr = rep_trials[controller]
-        ax = axes[row][0]
+        fig, ax = plt.subplots(figsize=(8, 2.4), layout="constrained")
         draw_corridor_map(ax, img, extent, plan_xy)
         ax.plot(plan_xy[:, 0], plan_xy[:, 1], "k--", linewidth=1, alpha=0.7, zorder=2)
         v = tr["df"]["v_real"].to_numpy(dtype=float)
@@ -513,14 +510,13 @@ def plot_corridor_speed_colored(rep_trials, plan_xy, img, extent, out_dir, stem)
                             capstyle="round", zorder=3)
         lc.set_array(seg_v[ok])
         ax.add_collection(lc)
-        ax.set_title(controller, loc="left", fontsize=12)
-    axes[-1][0].set_xlabel("$x$ [m]")
-    fig.colorbar(lc, ax=[axes[r][0] for r in range(len(controllers))],
-                 orientation="vertical", fraction=0.03, pad=0.02,
-                 label="Linear velocity [m/s]")
-    for ext in ("pdf", "png"):
-        fig.savefig(out_dir / f"{stem}_speed_colored.{ext}", dpi=300, bbox_inches="tight")
-    plt.close(fig)
+        ax.set_xlabel("$x$ [m]")
+        fig.colorbar(lc, ax=ax, orientation="vertical", fraction=0.03, pad=0.02,
+                     label="Linear velocity [m/s]")
+        for ext in ("pdf", "png"):
+            fig.savefig(out_dir / f"{stem}_speed_{controller.lower()}.{ext}",
+                        dpi=300, bbox_inches="tight")
+        plt.close(fig)
 
 
 def plot_corridor_vcmd_panels(rep_trials, out_dir, stem, r_min=1.5, d_prox=0.7):
