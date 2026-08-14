@@ -3,7 +3,7 @@
 # Changes vs the frozen file:
 #   1. controller_plugins = ["RPP", "DWPP"] only (PP/APP blocks removed)
 #   2. Proximity heuristic ON in both blocks: use_cost_regulated_linear_velocity_scaling
-#      + cost_scaling_dist 0.6 / cost_scaling_gain 1.0 / inflation_cost_scaling_factor 3.0
+#      + cost_scaling_dist 0.7 / cost_scaling_gain 1.0 / inflation_cost_scaling_factor 3.0
 #      (matches local_costmap inflation_layer.cost_scaling_factor)
 #   3. collision_monitor: all interventions disabled (transparent cmd_vel relay);
 #      safety = human supervisor with WHILL joystick override + soft obstacles
@@ -11,9 +11,14 @@
 #      (the RPP paper used a different robot (Tiago) so its v_max/a_max/lookahead
 #      are not adopted). The RPP paper states NO numeric values for its regulation
 #      heuristics (r_min, proximity d_prox/alpha, min speed threshold); the values
-#      here (cost_scaling_dist 0.6, cost_scaling_gain 1.0, r_min 0.90,
-#      min_speed 0.25) are the RPP authors' own Nav2 reference-implementation
-#      defaults, which is the closest available alignment.
+#      here (cost_scaling_dist 0.7, cost_scaling_gain 1.0, r_min 1.50,
+#      min_speed 0.25) are matched to the course geometry so that both
+#      heuristics are exercised (2026-08-14 update from the Nav2 defaults
+#      0.6/0.90, with which the curvature heuristic never fired):
+#        - d_prox 0.7 = typical obstacle clearance in this corridor
+#          (measured scan_min_dist: min ~0.4, median ~0.7) = inflation_radius
+#        - r_min 1.50 > tightest weave turning radius (~0.8-1.0 m), so the
+#          curvature heuristic activates in every turn (~20% of cycles)
 #      Course geometry follows the paper: 1.5 m corridor, ~0.7 m obstacles.
 # Launch: ros2 launch ytlab2_whill_modules dwpp_experiment.launch.py \
 #   params_path:=/home/ubuntu/ros2_ws/src/dwpp_test_simulation/params/revision_exp2_obstacle_params.yaml \
@@ -63,10 +68,10 @@ controller_server:
       # min_distance_to_obstacle: -1.0
       use_regulated_linear_velocity_scaling: true # RPP
       use_cost_regulated_linear_velocity_scaling: true # proximity heuristic ON (revision exp2)
-      cost_scaling_dist: 0.6
+      cost_scaling_dist: 0.7
       cost_scaling_gain: 1.0
       inflation_cost_scaling_factor: 3.0 # must equal local_costmap inflation_layer.cost_scaling_factor
-      regulated_linear_scaling_min_radius: 0.90
+      regulated_linear_scaling_min_radius: 1.50
       regulated_linear_scaling_min_speed: 0.25
       # use_fixed_curvature_lookahead: false
       # curvature_lookahead_dist: 0.6
@@ -103,10 +108,10 @@ controller_server:
       # min_distance_to_obstacle: -1.0
       use_regulated_linear_velocity_scaling: true # RPP
       use_cost_regulated_linear_velocity_scaling: true # proximity heuristic ON (revision exp2)
-      cost_scaling_dist: 0.6
+      cost_scaling_dist: 0.7
       cost_scaling_gain: 1.0
       inflation_cost_scaling_factor: 3.0 # must equal local_costmap inflation_layer.cost_scaling_factor
-      regulated_linear_scaling_min_radius: 0.90
+      regulated_linear_scaling_min_radius: 1.50
       regulated_linear_scaling_min_speed: 0.25
       # use_fixed_curvature_lookahead: false
       # curvature_lookahead_dist: 0.6
