@@ -547,22 +547,23 @@ def plot_corridor_vcmd_panels(rep_trials, out_dir, stem, r_min=1.5, d_prox=0.7):
         cause[(curv_scale < np.inf) & (curv_scale <= prox_scale)] = 1
         cause[(prox_scale < np.inf) & (prox_scale < curv_scale)] = 2
 
-        # (1) velocity profile with legend
-        fig, ax = plt.subplots(figsize=(3.4, 2.8))
-        ax.plot(t, v_real, color="blue", linewidth=1.0, label="Measured velocity")
-        ax.plot(t, v_cmd, color="red", linewidth=1.2, label="Command velocity")
+        # (1) velocity profile: cause-colored halo bands under the lines
+        fig, ax = plt.subplots(figsize=(2.6, 2.2))
         ax.plot(t, np.where(cause == 1, v_cmd, np.nan), color=CURV_COLOR,
-                linewidth=2.0, label="Curvature heuristic")
+                linewidth=6, alpha=0.35, solid_capstyle="round", zorder=1)
         ax.plot(t, np.where(cause == 2, v_cmd, np.nan), color=PROX_COLOR,
-                linewidth=2.0, label="Proximity heuristic")
-        ax.set_ylabel("Linear velocity [m/s]")
+                linewidth=6, alpha=0.35, solid_capstyle="round", zorder=1)
+        ax.plot(t, v_real, color="blue", linewidth=1.0, zorder=2,
+                label="Actual velocity")
+        ax.plot(t, v_cmd, color="red", linewidth=1.2, zorder=3,
+                label="Command velocity")
+        ax.set_ylabel("Velocity [m/s]")
         ax.set_xlabel("Time [s]")
         ax.set_ylim(bottom=0)
         ax.grid(True, alpha=0.3)
         handles, labels = ax.get_legend_handles_labels()
-        order = [1, 0, 2, 3]
-        ax.legend([handles[i] for i in order], [labels[i] for i in order],
-                  loc="lower center", fontsize=7, ncol=2, framealpha=0.9)
+        ax.legend([handles[1], handles[0]], [labels[1], labels[0]],
+                  loc="lower center", fontsize=9, framealpha=0.9)
         fig.tight_layout()
         for ext in ("pdf", "png"):
             fig.savefig(out_dir / f"{stem}_vcmd_{controller.lower()}_vel.{ext}",
@@ -570,11 +571,11 @@ def plot_corridor_vcmd_panels(rep_trials, out_dir, stem, r_min=1.5, d_prox=0.7):
         plt.close(fig)
 
         # (2) commanded curvature profile
-        fig, ax = plt.subplots(figsize=(3.4, 2.8))
+        fig, ax = plt.subplots(figsize=(2.6, 2.2))
         ax.plot(t, kappa, color=CURV_COLOR, linewidth=1.2)
         ax.axhline(y=1.0 / r_min, color="gray", linestyle="--", linewidth=1)
         ax.axhline(y=-1.0 / r_min, color="gray", linestyle="--", linewidth=1)
-        ax.set_ylabel("Commanded curvature [1/m]")
+        ax.set_ylabel("Curvature [1/m]")
         ax.set_xlabel("Time [s]")
         ax.set_ylim(-1.5, 1.5)
         ax.grid(True, alpha=0.3)
@@ -585,10 +586,10 @@ def plot_corridor_vcmd_panels(rep_trials, out_dir, stem, r_min=1.5, d_prox=0.7):
         plt.close(fig)
 
         # (3) obstacle distance profile
-        fig, ax = plt.subplots(figsize=(3.4, 2.8))
+        fig, ax = plt.subplots(figsize=(2.6, 2.2))
         ax.plot(t, dist, color=PROX_COLOR, linewidth=1.2)
         ax.axhline(y=d_prox, color="gray", linestyle="--", linewidth=1)
-        ax.set_ylabel("Min. obstacle distance [m]")
+        ax.set_ylabel("Distance [m]")
         ax.set_xlabel("Time [s]")
         ax.set_ylim(bottom=0)
         ax.grid(True, alpha=0.3)
