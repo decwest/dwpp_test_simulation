@@ -190,7 +190,8 @@ controller_server:
       use_dynamic_window: true # DWPP
     MPPI:
       plugin: "nav2_mppi_controller::MPPIController"
-      use_last_command_velocity: false       # Match DWPP: initialize rollouts from the previous raw command
+      use_last_command_velocity: true        # Match DWPP: initialize rollouts from the previous raw command
+                                             # (set dynamically to true during the experiment runs; recorded here)
       # Tuned base: ytlab2_whill_modules/config/nav2/controller_comparison_params.yaml (MPPI)
       # 30 Hz source profile: config/hardware_experiment/paper_2026_profiles.yaml (paper_exp2 MPPI)
       # Final comparison profile runs all controllers at 30 Hz; MPPI
