@@ -10,7 +10,7 @@ GUIレコーダCSV と プラグイン内蔵ロガーCSV の整合性チェッ�
 
 usage:
   python3 scripts/check_recorder_consistency.py \
-      --recorder-csv data/real_robot_experiment_revision/.../PathA_DWPP_*.csv \
+      --recorder-csv data/mppi_obstacle_experiment/.../PathA_DWPP_*.csv \
       --plugin-csv   <install share>/dwpp_test_simulation/data/dynamic_window_pure_pursuit_log_*.csv
 """
 

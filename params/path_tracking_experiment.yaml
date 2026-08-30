@@ -1,28 +1,11 @@
-# DWPP RAS revision experiment 2 (obstacle env / proximity heuristic) parameters.
+# Path-tracking comparison experiment (PP-family vs MPPI) parameters.
 # Derived from real_robot_experiment_params.yaml (frozen paper conditions).
 # Changes vs the frozen file:
-#   1. controller_plugins = ["RPP", "DWPP"] only (PP/APP blocks removed)
-#   2. Proximity heuristic ON in both blocks: use_cost_regulated_linear_velocity_scaling
-#      + cost_scaling_dist 0.7 / cost_scaling_gain 1.0 / inflation_cost_scaling_factor 3.0
-#      (matches local_costmap inflation_layer.cost_scaling_factor)
-#   3. collision_monitor: all interventions disabled (transparent cmd_vel relay);
-#      safety = human supervisor with WHILL joystick override + soft obstacles
-#   4. Velocity/acceleration limits and lookahead stay at the FROZEN paper values
-#      (the RPP paper used a different robot (Tiago) so its v_max/a_max/lookahead
-#      are not adopted). The RPP paper states NO numeric values for its regulation
-#      heuristics (r_min, proximity d_prox/alpha, min speed threshold); the values
-#      here (cost_scaling_dist 0.7, cost_scaling_gain 1.0, r_min 1.50,
-#      min_speed 0.25) are matched to the course geometry so that both
-#      heuristics are exercised (2026-08-14 update from the Nav2 defaults
-#      0.6/0.90, with which the curvature heuristic never fired):
-#        - d_prox 0.7 = typical obstacle clearance in this corridor
-#          (measured scan_min_dist: min ~0.4, median ~0.7) = inflation_radius
-#        - r_min 1.50 > tightest weave turning radius (~0.8-1.0 m), so the
-#          curvature heuristic activates in every turn (~20% of cycles)
-#      Course geometry: about 2.0 m corridor, ~1.0 m obstacles, 10 m NavFn path.
+#   1. controller_plugins += "MPPI" (PP/APP/RPP/DWPP blocks unchanged)
+#   2. MPPI block added (frozen safety envelope: vx 0.5, wz 1.0, ax 0.5, az 1.0)
+#   3. local_costmap 3x3 -> 6x6 (MPPI 4.0 s horizon; PP-family does not read the costmap)
 # Launch: ros2 launch ytlab2_whill_modules dwpp_experiment.launch.py \
-#   params_path:=/home/ubuntu/ros2_ws/src/dwpp_test_simulation/params/revision_exp2_obstacle_params.yaml \
-#   path_set:=corridor
+#   params_path:=/home/ubuntu/ros2_ws/src/dwpp_test_simulation/params/path_tracking_experiment.yaml
 controller_server:
   ros__parameters:
     controller_frequency: 30.0
@@ -35,16 +18,96 @@ controller_server:
     odom_duration: 0.3
     progress_checker_plugins: ["progress_checker"] # progress_checker_plugin: "progress_checker" For Humble and older
     goal_checker_plugins: ["goal_checker"] # goal_checker_plugin: "goal_checker" For Galactic and older
-    controller_plugins: ["RPP", "DWPP"]
+    controller_plugins: ["PP", "APP", "RPP", "DWPP", "MPPI"]
     progress_checker:
       plugin: "nav2_controller::SimpleProgressChecker"
       required_movement_radius: 0.5
-      movement_time_allowance: 10.0
+      movement_time_allowance: 30.0
     goal_checker:
       plugin: "nav2_controller::SimpleGoalChecker"
-      xy_goal_tolerance: 0.20
-      yaw_goal_tolerance: 0.50
+      xy_goal_tolerance: 0.10
+      yaw_goal_tolerance: 0.25
       stateful: True
+    PP:
+      plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
+      max_linear_vel: 0.50
+      min_linear_vel: 0.0
+      max_angular_vel: 1.0
+      min_angular_vel: -1.0
+      max_linear_accel: 0.50
+      max_linear_decel: -0.50
+      max_angular_accel: 1.0
+      max_angular_decel: -1.0
+      lookahead_dist: 0.60
+      min_lookahead_dist: 0.30
+      max_lookahead_dist: 0.70
+      lookahead_time: 1.4
+      # rotate_to_heading_angular_vel: 1.8
+      # transform_tolerance: 0.1
+      use_velocity_scaled_lookahead_dist: false # APP
+      # min_approach_linear_velocity: 0.05
+      # approach_velocity_scaling_dist: 0.6
+      # max_allowed_time_to_collision_up_to_carrot: 1.0
+      # min_distance_to_obstacle: -1.0
+      use_regulated_linear_velocity_scaling: false # RPP
+      use_cost_regulated_linear_velocity_scaling: false # RPP
+      # cost_scaling_dist: 0.6
+      # cost_scaling_gain: 1.0
+      # inflation_cost_scaling_factor: 3.0
+      # regulated_linear_scaling_min_radius: 0.90
+      regulated_linear_scaling_min_speed: 0.25
+      # use_fixed_curvature_lookahead: false
+      # curvature_lookahead_dist: 0.6
+      use_rotate_to_heading: false
+      # rotate_to_heading_min_angle: 3.14 # OFF since DWPP can handle steep curvature
+      # use_cancel_deceleration: false
+      # cancel_deceleration: 3.2
+      # allow_reversing: false
+      # interpolate_curvature_after_goal: false
+      use_collision_detection: false
+      # max_robot_pose_search_dist: 3.0
+      # stateful: true
+      use_dynamic_window: false # DWPP
+    APP:
+      plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
+      max_linear_vel: 0.50
+      min_linear_vel: 0.0
+      max_angular_vel: 1.0
+      min_angular_vel: -1.0
+      max_linear_accel: 0.50
+      max_linear_decel: -0.50
+      max_angular_accel: 1.0
+      max_angular_decel: -1.0
+      lookahead_dist: 0.60
+      min_lookahead_dist: 0.30
+      max_lookahead_dist: 0.70
+      lookahead_time: 1.4
+      # rotate_to_heading_angular_vel: 1.8
+      # transform_tolerance: 0.1
+      use_velocity_scaled_lookahead_dist: true # APP
+      # min_approach_linear_velocity: 0.05
+      # approach_velocity_scaling_dist: 0.6
+      # max_allowed_time_to_collision_up_to_carrot: 1.0
+      # min_distance_to_obstacle: -1.0
+      use_regulated_linear_velocity_scaling: false # RPP
+      use_cost_regulated_linear_velocity_scaling: false # RPP
+      # cost_scaling_dist: 0.6
+      # cost_scaling_gain: 1.0
+      # inflation_cost_scaling_factor: 3.0
+      # regulated_linear_scaling_min_radius: 0.90
+      regulated_linear_scaling_min_speed: 0.25
+      # use_fixed_curvature_lookahead: false
+      # curvature_lookahead_dist: 0.6
+      use_rotate_to_heading: false
+      # rotate_to_heading_min_angle: 3.14 # OFF since DWPP can handle steep curvature
+      # use_cancel_deceleration: false
+      # cancel_deceleration: 3.2
+      # allow_reversing: false
+      # interpolate_curvature_after_goal: false
+      use_collision_detection: false
+      # max_robot_pose_search_dist: 3.0
+      # stateful: true
+      use_dynamic_window: false # DWPP
     RPP:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
       max_linear_vel: 0.50
@@ -67,11 +130,11 @@ controller_server:
       # max_allowed_time_to_collision_up_to_carrot: 1.0
       # min_distance_to_obstacle: -1.0
       use_regulated_linear_velocity_scaling: true # RPP
-      use_cost_regulated_linear_velocity_scaling: true # proximity heuristic ON (revision exp2)
-      cost_scaling_dist: 0.7
-      cost_scaling_gain: 1.0
-      inflation_cost_scaling_factor: 3.0 # must equal local_costmap inflation_layer.cost_scaling_factor
-      regulated_linear_scaling_min_radius: 1.50
+      use_cost_regulated_linear_velocity_scaling: false # RPP
+      # cost_scaling_dist: 0.6
+      # cost_scaling_gain: 1.0
+      # inflation_cost_scaling_factor: 3.0
+      # regulated_linear_scaling_min_radius: 0.90
       regulated_linear_scaling_min_speed: 0.25
       # use_fixed_curvature_lookahead: false
       # curvature_lookahead_dist: 0.6
@@ -107,11 +170,11 @@ controller_server:
       # max_allowed_time_to_collision_up_to_carrot: 1.0
       # min_distance_to_obstacle: -1.0
       use_regulated_linear_velocity_scaling: true # RPP
-      use_cost_regulated_linear_velocity_scaling: true # proximity heuristic ON (revision exp2)
-      cost_scaling_dist: 0.7
-      cost_scaling_gain: 1.0
-      inflation_cost_scaling_factor: 3.0 # must equal local_costmap inflation_layer.cost_scaling_factor
-      regulated_linear_scaling_min_radius: 1.50
+      use_cost_regulated_linear_velocity_scaling: false # RPP
+      # cost_scaling_dist: 0.6
+      # cost_scaling_gain: 1.0
+      # inflation_cost_scaling_factor: 3.0
+      # regulated_linear_scaling_min_radius: 0.90
       regulated_linear_scaling_min_speed: 0.25
       # use_fixed_curvature_lookahead: false
       # curvature_lookahead_dist: 0.6
@@ -125,6 +188,124 @@ controller_server:
       # max_robot_pose_search_dist: 3.0
       # stateful: true
       use_dynamic_window: true # DWPP
+    MPPI:
+      plugin: "nav2_mppi_controller::MPPIController"
+      use_last_command_velocity: true        # Match DWPP: initialize rollouts from the previous raw command
+                                             # (set dynamically to true during the experiment runs; recorded here)
+      # Tuned base: ytlab2_whill_modules/config/nav2/controller_comparison_params.yaml (MPPI)
+      # 30 Hz source profile: config/hardware_experiment/paper_2026_profiles.yaml (paper_exp2 MPPI)
+      # Final comparison profile runs all controllers at 30 Hz; MPPI
+      # satisfies the real-time deadline with a 4.0 s prediction horizon.
+      # MPPI uses a 4.0 s horizon: long enough to initiate the 135 deg turn
+      # under the common angular limits without excessive long-horizon corner cutting.
+      # Acceleration limits and the downstream velocity-smoother safety envelope
+      # follow the frozen DWPP-paper constraint set, not the ECPP hardware envelope.
+      time_steps: 120                     # 120 x (1/30 s) = 4.0 s prediction window
+      model_dt: 0.03333333333333333       # = 1 / controller_frequency (30 Hz)
+      batch_size: 2000
+      ax_max: 0.50
+      ax_min: -0.50
+      ay_max: 0.0
+      ay_min: -0.0
+      az_max: 1.00
+      vx_std: 0.20                      # pair with the validated forward deadband profile below
+      vy_std: 0.0
+      wz_std: 0.50                      # retain enough candidates for a feasible cornering arc
+      vx_max: 0.50
+      vx_min: 0.0
+      vy_max: 0.0
+      wz_max: 1.0                      # modest authority to finish the 135 deg turn before progress timeout
+      iteration_count: 1
+      prune_distance: 2.5                 # retain enough post-corner direction for the 135 deg polyline
+      transform_tolerance: 0.1
+      temperature: 0.3                    # avoid locking onto one saturated-wz sample sequence
+      gamma: 0.015                        # Nav2 default; retained from the tuned profile
+      motion_model: "DiffDrive"
+      visualize: true                    # synchronized with the tuned dynamic-reconfigure profile
+      regenerate_noises: true             # generate a fresh noise distribution for each control cycle
+      TrajectoryVisualizer:
+        trajectory_step: 5
+        time_step: 10                     # visualization-only: 0.33 s point spacing at 30 Hz
+      critics: [
+        "ConstraintCritic", "GoalCritic",
+        "GoalAngleCritic", "PathAlignCritic", "PathFollowCritic",
+        "PathAngleCritic", "TwirlingCritic", "VelocityDeadbandCritic"]
+      # critics: [
+      #   "ConstraintCritic", "GoalCritic",
+      #   "GoalAngleCritic", "PathFollowCritic",
+      #   "PathAngleCritic", "PreferForwardCritic", "TwirlingCritic",
+      #   "VelocityDeadbandCritic"]
+      ConstraintCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 4.0
+      GoalCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 45.0                 # retain goal capture against the stronger forward deadband
+        threshold_to_consider: 1.4        # within the 2.0 m maximum projected horizon travel
+      GoalAngleCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 3.0
+        threshold_to_consider: 0.5
+      PreferForwardCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 5.0
+        threshold_to_consider: 0.5
+      TwirlingCritic:
+        enabled: false
+        cost_power: 1
+        cost_weight: 10.0
+      VelocityDeadbandCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 30.0                 # maintain a moving arc through the 135 deg corner
+        deadband_velocities: [0.10, 0.0, 0.0]  # preserve translational progress through a corner
+      CostCritic:
+        # Inert reference block: CostCritic is intentionally absent from critics.
+        # Exp1 is an obstacle-free tracking test, matching the PP-family setup.
+        enabled: false
+        cost_power: 1
+        cost_weight: 3.81
+        near_collision_cost: 253
+        critical_cost: 300.0
+        consider_footprint: false
+        collision_cost: 1000000.0
+        near_goal_distance: 1.0
+        trajectory_point_step: 3          # inactive; 0.10 s evaluation spacing at 30 Hz
+      PathAlignCritic:
+        enabled: true
+        cost_power: 2
+        cost_weight: 20.0
+        max_path_occupancy_ratio: 0.05
+        trajectory_point_step: 6          # 6 / 30 Hz = 0.20 s evaluation spacing
+        threshold_to_consider: 0.5
+        offset_from_furthest: 33          # activation gate, not a path lookahead distance
+        use_path_orientations: false
+      PathAngleCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 5.0
+        offset_from_furthest: 70
+        threshold_to_consider: 0.5
+        max_angle_to_furthest: 0.523599
+        mode: 0
+      PathFollowCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 10.0
+        offset_from_furthest: 25          # 0.25 m beyond the candidates' furthest reach at 1 cm spacing
+        threshold_to_consider: 1.4        # within the 2.0 m maximum projected horizon travel
+      # PathAngleCritic:
+      #   enabled: true
+      #   cost_power: 1
+      #   cost_weight: 12.0                 # overcome TwirlingCritic only when the 30 deg gate opens at a corner
+      #   offset_from_furthest: 70          # 0.70 m beyond the furthest sampled reach within the local plan
+      #   threshold_to_consider: 0.5
+      #   max_angle_to_furthest: 0.523599   # 30 deg gate limits early corner cutting; VDB sustains the turn
+      #   mode: 0
 
 velocity_smoother:
   ros__parameters:
@@ -142,15 +323,11 @@ velocity_smoother:
 
 amcl:
   ros__parameters:
-    # Low-noise tuning for the ECPP experiments: WHILL encoder odometry is
-    # accurate over short horizons and the 2D maps come fresh from the same
-    # building, so the filter trusts odometry and scan hits more than the
-    # stock (kidnap-robust) defaults.
-    alpha1: 0.1
-    alpha2: 0.1
-    alpha3: 0.1
-    alpha4: 0.1
-    alpha5: 0.1
+    alpha1: 0.2
+    alpha2: 0.2
+    alpha3: 0.2
+    alpha4: 0.2
+    alpha5: 0.2
     base_frame_id: "base_footprint"
     beam_skip_distance: 0.5
     beam_skip_error_threshold: 0.9
@@ -162,26 +339,26 @@ amcl:
     laser_max_range: 100.0
     laser_min_range: -1.0
     laser_model_type: "likelihood_field"
-    max_beams: 180
-    max_particles: 4000
-    min_particles: 1000
+    max_beams: 60
+    max_particles: 2000
+    min_particles: 500
     odom_frame_id: "odom"
-    pf_err: 0.02
+    pf_err: 0.05
     pf_z: 0.99
     recovery_alpha_fast: 0.0
     recovery_alpha_slow: 0.0
-    resample_interval: 2
+    resample_interval: 1
     robot_model_type: "nav2_amcl::DifferentialMotionModel"
     save_pose_rate: 0.5
-    sigma_hit: 0.15
+    sigma_hit: 0.2
     tf_broadcast: true
     transform_tolerance: 1.0
     introspection_mode: "disabled"
     update_min_a: 0.05
     update_min_d: 0.05
-    z_hit: 0.85
+    z_hit: 0.5
     z_max: 0.05
-    z_rand: 0.15
+    z_rand: 0.5
     z_short: 0.05
     scan_topic: /merged_scan_filtered
 
@@ -238,12 +415,11 @@ local_costmap:
       global_frame: odom
       robot_base_frame: base_footprint
       rolling_window: true
-      width: 3
-      height: 3
+      # 6x6 (was 3x3): contains MPPI's 4.0 s horizon travel + footprint (ECPP precedent).
+      width: 6
+      height: 6
       resolution: 0.05
-      # Axis-aligned bounds of all URDF collision geometry in base_footprint.
-      footprint: "[[0.745000, 0.270106], [0.745000, -0.270106], [-0.151696, -0.270106], [-0.151696, 0.270106]]"
-      footprint_padding: 0.0
+      robot_radius: 0.22
       plugins: ["voxel_layer", "inflation_layer"]
       filters: ["keepout_filter"]
       keepout_filter:
@@ -295,9 +471,7 @@ global_costmap:
       publish_frequency: 1.0
       global_frame: map
       robot_base_frame: base_footprint
-      # Same unpadded URDF-derived footprint as the local costmap.
-      footprint: "[[0.745000, 0.270106], [0.745000, -0.270106], [-0.151696, -0.270106], [-0.151696, 0.270106]]"
-      footprint_padding: 0.0
+      robot_radius: 0.22
       resolution: 0.05
       track_unknown_space: true
       plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
@@ -499,25 +673,23 @@ collision_monitor:
     stop_pub_timeout: 2.0
     # Polygons represent zone around the robot for "stop", "slowdown" and "limit" action types,
     # and robot footprint for "approach" action type.
-    # Revision exp2: every intervention disabled -> node acts as a transparent
-    # cmd_vel relay (cmd_vel_smoothed -> /whill/controller/cmd_vel), so the
-    # proximity-heuristic comparison is not confounded. Safety is provided by
-    # a human supervisor (WHILL joystick override) and soft obstacles.
-    polygons: ["EmergencyStop"]
-    EmergencyStop:
+    polygons: ["FootprintApproach"]
+    FootprintApproach:
       type: "polygon"
-      action_type: "stop"
-      points: "[[1.10, 0.22], [1.10, -0.22], [-0.00, -0.22], [-0.00, 0.22]]"
-      min_points: 4
+      action_type: "approach"
+      footprint_topic: "local_costmap/published_footprint"
+      time_before_collision: 1.2
+      simulation_time_step: 0.1
+      min_points: 6
       visualize: False
-      enabled: False
+      enabled: True
     observation_sources: ["scan"]
     scan:
       type: "scan"
       topic: "/merged_scan_filtered"
       min_height: 0.15
       max_height: 2.0
-      enabled: False
+      enabled: True
 
 docking_server:
   ros__parameters:

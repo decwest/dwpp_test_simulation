@@ -1,4 +1,4 @@
-# Simulation dry-run twin of revision_exp1_mppi_params.yaml (TB3 Gazebo, dwpp_test.launch.py).
+# Simulation dry-run twin of path_tracking_experiment.yaml (TB3 Gazebo, dwpp_test.launch.py).
 # = test_params.yaml + MPPI block (TB3 limits) + local_costmap 6x6.
 # Purpose: verify recorder/MPPI/computation_time plumbing without the robot.
 controller_server:
@@ -192,7 +192,7 @@ controller_server:
       # Tuned base: ytlab2_whill_modules/config/nav2/controller_comparison_params.yaml (MPPI)
       # 30 Hz adaptation: config/hardware_experiment/paper_2026_profiles.yaml (paper_exp2 MPPI)
       # Velocity/acceleration limits follow the frozen DWPP-paper constraint set,
-      # NOT the ECPP hardware envelope (fairness requirement of the revision).
+      # NOT the ECPP hardware envelope (for fair comparison).
       time_steps: 60                      # 60 x (1/30 s) = 2.0 s horizon
       model_dt: 0.03333333333333333       # = 1 / controller_frequency
       batch_size: 2000

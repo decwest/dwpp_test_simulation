@@ -285,7 +285,7 @@ def build_local_paths(path_set: str, frame_id: str) -> dict:
 # ==========================================
 
 # プラグイン内蔵ロガーと同一の35列 + 追加列(scan_min_dist)
-REVISION_CSV_COLUMNS = [
+RECORDER_CSV_COLUMNS = [
     "sec", "nsec",
     "odom_base_x", "odom_base_y", "odom_base_yaw",
     "map_odom_x", "map_odom_y", "map_odom_yaw",
@@ -394,7 +394,7 @@ class FollowPathClient(Node):
         self.base_frame_id = self.declare_parameter("base_frame_id", "base_footprint").value
         self.odom_frame_id = self.declare_parameter("odom_frame_id", "odom").value
         self.experiment_name = self.declare_parameter(
-            "experiment_name", "real_robot_experiment_revision/scratch"
+            "experiment_name", "mppi_obstacle_experiment/scratch"
         ).value
         # 経路セット: polyline (45/90/135度折れ線) / iso /
         # corridor (NavFn 固定大域経路)
@@ -780,7 +780,7 @@ class FollowPathClient(Node):
     # =========================================================================
 
     def _reset_record_buffer(self):
-        # 行リスト形式 (列順 = REVISION_CSV_COLUMNS)
+        # 行リスト形式 (列順 = RECORDER_CSV_COLUMNS)
         self._record_rows = []
         self._timing_rows = []
 
@@ -875,7 +875,7 @@ class FollowPathClient(Node):
         filename = os.path.join(dir_name, f"{basename}.csv")
         with open(filename, "w", newline="") as csvfile:
             writer = csv.writer(csvfile)
-            writer.writerow(REVISION_CSV_COLUMNS)
+            writer.writerow(RECORDER_CSV_COLUMNS)
             for row in rows:
                 writer.writerow(
                     [f"{v:.6f}" if isinstance(v, float) else v for v in row]
