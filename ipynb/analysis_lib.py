@@ -1,3 +1,5 @@
+from __future__ import annotations  # Python 3.8 互換 (list[Path] 等の遅延評価)
+
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
