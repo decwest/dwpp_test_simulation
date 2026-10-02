@@ -15,11 +15,13 @@
   <exec_depend>unique_identifier_msgs</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>tf2_ros_py</exec_depend>
   <exec_depend>nav2_common</exec_depend>
   <exec_depend>ament_index_python</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
+  <exec_depend>rviz2</exec_depend>
   <exec_depend>nav2_map_server</exec_depend>
   <exec_depend>nav2_amcl</exec_depend>
   <exec_depend>nav2_lifecycle_manager</exec_depend>

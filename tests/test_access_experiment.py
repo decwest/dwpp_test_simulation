@@ -2,6 +2,7 @@ import importlib.util
 import json
 from collections import Counter
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -57,6 +58,40 @@ def test_unset_origin_never_runs(tmp_path):
     experiment.prepare(tmp_path / 'one', ROOT / 'params/hsrb_dwvp_access_params.yaml')
     with pytest.raises(ValueError, match='origin'):
         experiment.load_trial(tmp_path / 'one', 'A_path1_RPP_r1')
+
+
+def test_status_reports_unready_and_incomplete_trials_without_writing(tmp_path):
+    root = tmp_path / 'session'
+    experiment.prepare(root, ROOT / 'params/hsrb_dwvp_access_params.yaml', [0, 0, 0])
+    before = set(root.rglob('*'))
+    states = {r['trial']: r['status'] for r in experiment.session_status(root)}
+    assert len(states) == 80 and states['A_obstacle_RPP_r1'] == 'needs_route'
+    assert states['B_path1_DWVP_r1'] == 'pending'
+    assert set(root.rglob('*')) == before
+    folder = root / 'runs/B_path1_DWVP_r1'
+    folder.mkdir(parents=True)
+    states = {r['trial']: r['status'] for r in experiment.session_status(root)}
+    assert states['B_path1_DWVP_r1'] == 'incomplete'
+
+
+@pytest.mark.parametrize('source,received,frame,ranges,valid', [
+    (10, 10, 'laser', [float('inf')] * 5, True),
+    (10, 10, 'laser', [.8, float('nan')], True),
+    (8, 10, 'laser', [.8], False),
+    (10, 8, 'laser', [.8], False),
+    (11, 10, 'laser', [.8], False),
+    (10, 10, '', [.8], False),
+    (10, 10, 'laser', [], False),
+    (10, 10, 'laser', [float('nan')], False),
+])
+def test_laser_preflight_checks_source_time_and_usable_measurements(source, received, frame, ranges, valid):
+    scan = SimpleNamespace(header=SimpleNamespace(frame_id=frame, stamp=SimpleNamespace(sec=source, nanosec=0)),
+                           ranges=ranges, range_min=.05, range_max=5.)
+    if valid:
+        assert experiment.scan_quality(scan, received, 10.1)['frame'] == 'laser'
+    else:
+        with pytest.raises(RuntimeError):
+            experiment.scan_quality(scan, received, 10.1)
 
 
 def test_errors_use_same_projected_position_and_wrapped_yaw():

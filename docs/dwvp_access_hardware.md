@@ -12,10 +12,8 @@ colcon build --packages-up-to dwpp_test_simulation
 source install/setup.bash
 ```
 
-The HSR workspace migration is on `feature/dwvp_access`. The experiment package
-also has its own `feature/dwvp_access` branch, which must be checked out inside
-the submodule. The parent workspace retains its previous experiment-package
-pointer rather than incorporating unrelated earlier local changes.
+The HSR workspace migration and experiment package are on `feature/dwvp_access`.
+Initialize the workspace's submodules at its recorded revisions before building.
 
 ## Experimental conditions
 
@@ -75,11 +73,13 @@ HSR driver and sensors running. Use the actual map of the surveyed environment.
 ```bash
 ros2 launch dwpp_test_simulation dwvp_access_hsr.launch.py \
   params_file:=/data/dwvp_access/session01/nav2_params.yaml \
-  map:=/path/to/surveyed/map.yaml
+  map:=/path/to/surveyed/map.yaml use_rviz:=true
 ```
 
 This launch starts localization, controller_server, velocity_smoother and their
-lifecycle manager. It does not start a GUI, global planner, or automatic trials.
+lifecycle manager. Optional RViz shows the map, laser scan, and frozen reference
+path, including orientation arrows. `use_rviz` defaults to `false` for headless
+operation. No global planner or automatic trials are started.
 Its command chain is explicit:
 
 `controller_server -> /cmd_vel_nav -> velocity_smoother -> /omni_base_controller/cmd_vel`
@@ -88,11 +88,47 @@ This differs from the older TMC launch, which publishes directly to the robot.
 Do not run both stacks concurrently. Check the graph once during the pilot and
 ensure the applied topic has only the intended smoother publisher.
 
+AMCL starts without an initial pose. In RViz, use **2D Pose Estimate** to specify
+the HSR's actual position and heading in the loaded map, then verify that laser
+returns align with the mapped walls. The session's `--origin` transforms the
+reference paths into map coordinates; it does **not** initialize localization.
+The launch never publishes an assumed `(0,0,0)` initial pose. Do not start the
+old test GUI for this purpose: it automatically resets localization to that pose.
+
+The frozen profile uses `/scan` (`sensor_msgs/msg/LaserScan`),
+`/omni_base_controller/wheel_odom` (`nav_msgs/msg/Odometry`), and the TF chain
+`map -> odom -> base_link`. Check that `/scan` has recent acquisition timestamps
+and that its `header.frame_id` can transform to `base_link` at those timestamps.
+A visible robot model alone does not establish that the laser is connected.
+Use the same ROS clock and synchronized host clocks for the sensor source and
+recorder. If the robot uses different topics or frames, update the frozen profile
+and recorder options together before preparing the recorded session.
+
 ## Record a trial
 
 Reset the HSR to the fixed initial position and the first reference yaw for the
 selected task. Read the next ID from the shuffled manifest. Each invocation
 sends exactly one FollowPath goal. There is no automatic physical repositioning.
+
+Inspect the frozen schedule and reference before motion. `preview` publishes a
+transient-local pose path for RViz and remains running until Ctrl-C. It sends no
+FollowPath goal and never initializes AMCL. Run it in a separate terminal.
+
+```bash
+ros2 run dwpp_test_simulation dwvp_access_experiment.py status --session /data/dwvp_access/session01
+ros2 run dwpp_test_simulation dwvp_access_experiment.py preview \
+  --session /data/dwvp_access/session01 --trial B_path1_DWVP_r1
+```
+
+After placing the robot at the frozen start pose, `preflight` performs the same
+initial checks as `run` without sending a goal or creating a trial directory:
+
+```bash
+ros2 run dwpp_test_simulation dwvp_access_experiment.py preflight \
+  --session /data/dwvp_access/session01 --trial B_path1_DWVP_r1
+```
+
+Then explicitly execute the selected trial:
 
 ```bash
 ros2 run dwpp_test_simulation dwvp_access_experiment.py run \
@@ -104,6 +140,11 @@ input hashes, and all explicitly configured parameters of the selected controlle
 goal/progress checkers, and velocity smoother before sending a goal. Odometry
 freshness uses both receipt and source timestamps. Parameter collection continues
 servicing subscriptions, and the start pose is checked afterward.
+The laser topic comes from the frozen local-costmap profile. Its receive and
+source ages must be at most 0.5 seconds, it must have usable ranges, and its
+frame must transform to the robot base at the acquisition timestamp. Positive
+infinite ranges are allowed as clear-space returns. The initial sensor-check
+metadata are saved in `result.json`. These are start-of-trial checks.
 It uses the same `general_goal_checker` for all methods. Goal rejection,
 timeout, action failure, or a final pose outside tolerance are failures.
 Completion time includes terminal rotation. Ctrl-C and timeout request goal
@@ -171,9 +212,12 @@ docker run --rm --network none --entrypoint bash -e ROS_DOMAIN_ID=178 \
 
 The isolated synthetic test exercises the actual ROS action client, pose-path
 transport, TF, three subscribed streams, runtime snapshots, success detection,
-and summary generation without a robot connection. Its five cases cover normal
+and summary generation without a robot connection. Its cases cover normal
 operation, delayed command streams, stale odometry source times, execution timeout,
-and delayed goal acceptance. It is not a controller test.
+delayed goal acceptance, and Ctrl-C cancellation. Separate checks reject missing
+or stale laser scans and unavailable laser transforms. Preview and preflight
+also verify that no action goal is sent and no trial is reserved. This is not a
+controller test.
 
 The separate `tests/ros_access_controller_smoke.py` starts the actual Humble
 controller server and velocity smoother against synthetic TF, odometry, a free

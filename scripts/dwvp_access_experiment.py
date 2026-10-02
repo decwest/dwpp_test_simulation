@@ -14,6 +14,7 @@ import math
 import random
 import shutil
 import subprocess
+import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -266,34 +267,113 @@ def summarize(session):
     return report
 
 
-def run(session, trial_id, base_frame='base_link', odom_topic='/omni_base_controller/wheel_odom'):
+def session_status(session):
+    """List trials in frozen order without modifying the session or importing ROS."""
+    session = Path(session)
+    manifest = json.loads((session / 'manifest.json').read_text())
+    rows = []
+    for trial in manifest['trials']:
+        folder = session / 'runs' / trial['id']
+        if (folder / 'result.json').exists():
+            state = json.loads((folder / 'result.json').read_text())['status']
+        elif folder.exists():
+            state = 'incomplete'
+        elif manifest['map_origin'] is None:
+            state = 'needs_origin'
+        elif manifest['paths'][trial['task']].get('file') is None:
+            state = 'needs_route'
+        else:
+            state = 'pending'
+        rows.append({'trial': trial['id'], 'status': state})
+    return rows
+
+
+def pose_path_message(reference, frame, stamp):
+    from geometry_msgs.msg import PoseStamped
+    from nav_msgs.msg import Path as RosPath
+    msg = RosPath()
+    msg.header.frame_id = frame
+    msg.header.stamp = stamp
+    for x, y, yaw in reference:
+        p = PoseStamped(); p.header = msg.header
+        p.pose.position.x = float(x); p.pose.position.y = float(y)
+        p.pose.orientation.z = math.sin(yaw / 2); p.pose.orientation.w = math.cos(yaw / 2)
+        msg.poses.append(p)
+    return msg
+
+
+def preview(session, trial_id):
+    """Publish only the frozen reference for RViz. No action client or velocity publisher."""
+    import rclpy
+    from nav_msgs.msg import Path as RosPath
+    from rclpy.node import Node
+    from rclpy.qos import DurabilityPolicy, QoSProfile
+    manifest, _, reference = load_trial(session, trial_id)
+    rclpy.init()
+    node = Node('dwvp_access_preview')
+    publisher = node.create_publisher(RosPath, '/dwvp_access/reference_path',
+                                     QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
+    try:
+        publisher.publish(pose_path_message(reference, manifest['frame'], node.get_clock().now().to_msg()))
+        print('Reference published on /dwvp_access/reference_path. No motion goal sent. Ctrl-C to close.', flush=True)
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.try_shutdown()
+
+
+def scan_quality(scan, received, stamp):
+    """Validate sensor timing and usable ranges; static laser TF has no age test."""
+    source = scan.header.stamp.sec + scan.header.stamp.nanosec / 1e9
+    receive_age, source_age = stamp - received, stamp - source
+    if not scan.header.frame_id or not (0 <= receive_age <= .5 and 0 <= source_age <= .5):
+        raise RuntimeError('A fresh laser scan with source timestamps and a frame is required')
+    ranges = np.asarray(scan.ranges)
+    usable = (np.isfinite(ranges) & (ranges >= scan.range_min) & (ranges <= scan.range_max)) | np.isposinf(ranges)
+    if not len(ranges) or not np.any(usable) or not (0 <= scan.range_min < scan.range_max):
+        raise RuntimeError('Laser scan contains no usable range measurements')
+    return {'frame': scan.header.frame_id, 'receive_age_s': receive_age, 'source_age_s': source_age}
+
+
+def run(session, trial_id, base_frame='base_link', odom_topic='/omni_base_controller/wheel_odom', preflight_only=False):
     import uuid
     import rclpy
     from action_msgs.msg import GoalStatus
     from action_msgs.srv import CancelGoal
-    from geometry_msgs.msg import Twist, PoseStamped
-    from nav_msgs.msg import Odometry, Path as RosPath
+    from geometry_msgs.msg import Twist
+    from nav_msgs.msg import Odometry
     from nav2_msgs.action import FollowPath
     from rclpy.action import ActionClient
     from rclpy.node import Node
     from rclpy.qos import qos_profile_sensor_data
+    from rclpy.signals import SignalHandlerOptions
     from tf2_ros import Buffer, TransformListener
     from unique_identifier_msgs.msg import UUID
+    from sensor_msgs.msg import LaserScan
+    import yaml
 
     session = Path(session)
     manifest, trial, reference = load_trial(session, trial_id)
-    folder = session / 'runs' / trial_id
-    folder.mkdir(parents=True, exist_ok=False)
+    temporary = tempfile.TemporaryDirectory(prefix='dwvp-preflight-') if preflight_only else None
+    folder = Path(temporary.name) if temporary else session / 'runs' / trial_id
+    if temporary is None:
+        folder.mkdir(parents=True, exist_ok=False)
     np.savetxt(folder / 'reference.csv', reference, delimiter=',', header='x,y,yaw', comments='')
     write_json(folder / 'trial.json', {'trial': trial, 'manifest_sha256': digest(session / 'manifest.json'),
                                     'params_sha256': manifest['params_sha256'], 'clock': 'ROS time; event receive stamps'})
-    rclpy.init()
+    # Keep the context alive on Ctrl-C until this client's goal is canceled.
+    rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
     node = Node('dwvp_access_recorder')
     buffer = Buffer()
     listener = TransformListener(buffer, node)
     client = ActionClient(node, FollowPath, '/follow_path')
     files = []
     latest = {}
+    latest_scan = []
+    config = yaml.safe_load((session / manifest['params_file']).read_text())
+    scan_topic = config['local_costmap']['local_costmap']['ros__parameters']['voxel_layer']['scan']['topic']
     command_first = {}
     recording = False
     start = node.get_clock().now().nanoseconds / 1e9
@@ -318,9 +398,13 @@ def run(session, trial_id, base_frame='base_link', odom_topic='/omni_base_contro
             command_first.setdefault(key, latest[key][0])
         event_writers[key].writerow([latest[key][0], source, twist.linear.x, twist.linear.y, twist.angular.z])
 
+    def scan_callback(msg):
+        latest_scan[:] = [msg, now()]
+
     subscriptions = [node.create_subscription(Twist, '/cmd_vel_nav', lambda m: callback('raw', m), 100),
                      node.create_subscription(Twist, '/omni_base_controller/cmd_vel', lambda m: callback('applied', m), 100),
-                     node.create_subscription(Odometry, odom_topic, lambda m: callback('odom', m), qos_profile_sensor_data)]
+                     node.create_subscription(Odometry, odom_topic, lambda m: callback('odom', m), qos_profile_sensor_data),
+                     node.create_subscription(LaserScan, scan_topic, scan_callback, qos_profile_sensor_data)]
     track = writer('tracking.csv', ['t', 'stamp_s', 'x', 'y', 'yaw', 'tf_age_s', 'raw_age_s', 'applied_age_s', 'odom_age_s', 'odom_source_age_s'])
     result = {'status': 'setup_failed', 'success': False}
     goal_handle = None
@@ -409,14 +493,36 @@ def run(session, trial_id, base_frame='base_link', odom_topic='/omni_base_contro
             raise RuntimeError('Fresh map pose and odometry are required')
         if np.linalg.norm(np.asarray(current[:2]) - reference[0, :2]) > .1 or abs(float(wrap(current[2] - reference[0, 2]))) > .3:
             raise RuntimeError('Reset robot to the frozen reference start pose before this trial')
-        msg = RosPath()
-        msg.header.frame_id = manifest['frame']
-        msg.header.stamp = node.get_clock().now().to_msg()
-        for x, y, yaw in reference:
-            p = PoseStamped(); p.header = msg.header
-            p.pose.position.x = float(x); p.pose.position.y = float(y)
-            p.pose.orientation.z = math.sin(yaw / 2); p.pose.orientation.w = math.cos(yaw / 2)
-            msg.poses.append(p)
+        scan_state = None
+        deadline = time.monotonic() + 5
+        scan_error = 'No laser scan received on ' + scan_topic
+        while time.monotonic() < deadline:
+            rclpy.spin_once(node, timeout_sec=.02)
+            if not latest_scan:
+                continue
+            try:
+                scan, received = latest_scan
+                scan_state = scan_quality(scan, received, now())
+                buffer.lookup_transform(base_frame, scan.header.frame_id, rclpy.time.Time.from_msg(scan.header.stamp))
+                break
+            except Exception as exc:
+                scan_state = None
+                scan_error = str(exc)
+        if scan_state is None:
+            raise RuntimeError('Laser preflight failed: ' + scan_error)
+        # Sensor discovery can take several seconds; recheck the start pose afterward.
+        current = pose()
+        if not (0 <= current[3] <= .2 and 0 <= now() - latest['odom'][0] <= .2 and 0 <= odom_source_age(now()) <= .2):
+            raise RuntimeError('Map pose or odometry became stale during sensor preflight')
+        if np.linalg.norm(np.asarray(current[:2]) - reference[0, :2]) > .1 or abs(float(wrap(current[2] - reference[0, 2]))) > .3:
+            raise RuntimeError('Robot moved away from the frozen start during sensor preflight')
+        result['preflight'] = {'scan_topic': scan_topic, 'scan': scan_state, 'base_frame': base_frame,
+                               'map_pose': current[:3], 'odom_topic': odom_topic}
+        if preflight_only:
+            result.pop('success')
+            result.update(status='ready', ready=True, motion_goal_sent=False)
+            return result
+        msg = pose_path_message(reference, manifest['frame'], node.get_clock().now().to_msg())
         goal = FollowPath.Goal(); goal.path = msg
         goal.controller_id = trial['controller']; goal.goal_checker_id = 'general_goal_checker'
         accepted = client.send_goal_async(goal, goal_uuid=goal_uuid)
@@ -474,7 +580,9 @@ def run(session, trial_id, base_frame='base_link', odom_topic='/omni_base_contro
         write_json(folder / 'result.json', result)
         for f in files: f.close()
         node.destroy_node()
-        rclpy.shutdown()
+        rclpy.try_shutdown()
+        if temporary:
+            temporary.cleanup()
     return result
 
 
@@ -487,16 +595,26 @@ def main():
     p.add_argument('--origin', type=float, nargs=3, metavar=('X', 'Y', 'YAW'))
     p.add_argument('--obstacle-path', type=Path)
     p.add_argument('--seed', type=int, default=20261003)
-    p = commands.add_parser('run')
+    for command in ('run', 'preflight'):
+        p = commands.add_parser(command)
+        p.add_argument('--session', type=Path, required=True); p.add_argument('--trial', required=True)
+        p.add_argument('--base-frame', default='base_link'); p.add_argument('--odom-topic', default='/omni_base_controller/wheel_odom')
+    p = commands.add_parser('preview')
     p.add_argument('--session', type=Path, required=True); p.add_argument('--trial', required=True)
-    p.add_argument('--base-frame', default='base_link'); p.add_argument('--odom-topic', default='/omni_base_controller/wheel_odom')
+    p = commands.add_parser('status'); p.add_argument('--session', type=Path, required=True)
     p = commands.add_parser('summarize'); p.add_argument('--session', type=Path, required=True)
     args = parser.parse_args()
     if args.command == 'prepare':
         result = prepare(args.output, args.params, args.origin, args.obstacle_path, args.seed)
         print(f"Prepared {len(result['trials'])} unrecorded trials in {args.output}")
-    elif args.command == 'run':
-        print(json.dumps(run(args.session, args.trial, args.base_frame, args.odom_topic), indent=2))
+    elif args.command in ('run', 'preflight'):
+        print(json.dumps(run(args.session, args.trial, args.base_frame, args.odom_topic,
+                             preflight_only=args.command == 'preflight'), indent=2))
+    elif args.command == 'preview':
+        preview(args.session, args.trial)
+    elif args.command == 'status':
+        for row in session_status(args.session):
+            print(f"{row['trial']:<28} {row['status']}")
     else:
         result = summarize(args.session)
         print(f"Recorded {result['recorded']}/{result['planned']}; pending {result['pending']}")
