@@ -18,6 +18,7 @@ install(DIRECTORY launch config urdf rviz params world
 install(PROGRAMS
   scripts/follow_path_test_gui.py
   scripts/follow_path_test_gui_real.py
+  scripts/dwvp_access_experiment.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

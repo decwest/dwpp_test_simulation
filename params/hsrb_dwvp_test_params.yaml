@@ -70,7 +70,7 @@ controller_server:
       allow_reversing: false
       use_interpolation: true
     VPmin:
-      plugin: "nav2_dynamic_window_vector_pursuit_controller::DynamicWindowVectorPursuitController"
+      plugin: "nav2_omnidirectional_dwvp_controller::OmnidirectionalDWVPController"
       # Base RPP parameters (still required by inherited infrastructure)
       max_linear_vel: 0.22
       min_linear_vel: -0.22
@@ -107,7 +107,7 @@ controller_server:
       csv_log_directory: "/home/dev/ros2_ws/src/third_party/dwpp_test_simulation/data"
       csv_filename_prefix: "vpmin_nav2"
     VPmax:
-      plugin: "nav2_dynamic_window_vector_pursuit_controller::DynamicWindowVectorPursuitController"
+      plugin: "nav2_omnidirectional_dwvp_controller::OmnidirectionalDWVPController"
       # Base RPP parameters (still required by inherited infrastructure)
       max_linear_vel: 0.22
       min_linear_vel: -0.22
@@ -144,7 +144,7 @@ controller_server:
       csv_log_directory: "/home/dev/ros2_ws/src/third_party/dwpp_test_simulation/data"
       csv_filename_prefix: "vpmax_nav2"
     DWVP:
-      plugin: "nav2_dynamic_window_vector_pursuit_controller::DynamicWindowVectorPursuitController"
+      plugin: "nav2_omnidirectional_dwvp_controller::OmnidirectionalDWVPController"
       # Base RPP parameters (still required by inherited infrastructure)
       max_linear_vel: 0.22
       min_linear_vel: -0.22
