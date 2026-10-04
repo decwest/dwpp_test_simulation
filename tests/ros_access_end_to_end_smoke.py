@@ -6,6 +6,7 @@ validation only: no robot, AMCL, TMC node, or paper performance trial is used.
 """
 
 import argparse
+from contextlib import ExitStack
 import importlib.util
 import json
 import os
@@ -28,16 +29,19 @@ experiment = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(experiment)
 
 
-def run_while_spinning(plant, command, output, timeout):
-    with output.open('w') as log:
-        process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT)
+def run_while_spinning(plant, command, output, timeout, *, separate_stderr=False):
+    stderr_output = output.with_suffix('.stderr.log') if separate_stderr else None
+    with output.open('w') as log, ExitStack() as stack:
+        errors = stack.enter_context(stderr_output.open('w')) if stderr_output else subprocess.STDOUT
+        process = subprocess.Popen(command, stdout=log, stderr=errors)
         try:
             spin_until(plant, lambda: process.poll() is not None, timeout)
         finally:
             if process.poll() is None:
                 process.send_signal(signal.SIGINT)
                 spin_until(plant, lambda: process.poll() is not None, 8.0)
-        assert process.returncode == 0, output.read_text()
+        assert process.returncode == 0, output.read_text() + (
+            stderr_output.read_text() if stderr_output else '')
 
 
 def main():
@@ -73,8 +77,10 @@ def main():
         snapshots = {}
         for name in ('controller_server', 'velocity_smoother'):
             snapshots[name] = output / f'{name}_runtime.yaml'
+            # Keep middleware diagnostics out of the machine-readable YAML.
             run_while_spinning(
-                plant, ['ros2', 'param', 'dump', '/' + name], snapshots[name], 20.0)
+                plant, ['ros2', 'param', 'dump', '/' + name], snapshots[name], 20.0,
+                separate_stderr=True)
         for controller in ('RPP', 'DWPP', 'MPPI', 'DWVP'):
             experiment.verify_runtime_parameters(params, snapshots, controller)
             print(f'Actual runtime configuration verified: {controller}', flush=True)
