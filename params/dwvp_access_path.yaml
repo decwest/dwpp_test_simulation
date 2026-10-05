@@ -1,0 +1,14 @@
+planner:
+  tolerance: 0.1
+  use_astar: false
+  allow_unknown: false
+  robot_radius_m: 0.22
+  inflation_radius_m: 0.70
+  cost_scaling_factor: 3.0
+smoothing:
+  method: elastic
+  data_weight: 0.2
+  smooth_weight: 0.3
+  iterations: 200
+  tolerance_m: 0.000001
+  sample_spacing_m: 0.02

@@ -1,0 +1,68 @@
+# Single source for nominal tuning, geometry, starts, and metric thresholds.
+# E1 poses are local to --origin; E2 CSV/start and surveyed geometry use map coordinates.
+schema_version: 3
+common:
+  control_frequency_hz: 30.0
+  lookahead_time: 0.75
+  min_lookahead_dist: 0.11
+  max_lookahead_dist: 0.33
+  max_velocity:
+  - 0.22
+  - 0.22
+  - 0.6
+  min_velocity:
+  - -0.22
+  - -0.22
+  - -0.6
+  max_accel:
+  - 0.22
+  - 0.22
+  - 0.6
+  max_decel:
+  - -0.22
+  - -0.22
+  - -0.6
+  pp_translation_speed: 0.22
+  omni_regulation_speed: 0.32
+  vp_translation_speed: 0.0
+trial:
+  xy_tolerance_m: 0.1
+  yaw_tolerance_rad: 0.3
+  timeout_s: 120.0
+conditions:
+  E1_lateral:
+    evaluation: {start_m: 0.0, goal_margin_m: 0.6}
+    methods: [DWPP, DWVP]
+    acceleration_scale: 1.0
+    length_m: 2.5
+    spacing_m: 0.01
+    start_pose:
+    - 0.0
+    - 0.5
+    - 0.0
+  E1_orientation_nominal: &orientation
+    evaluation: {start_m: 0.0, goal_margin_m: 0.6}
+    methods: [VP_CLIP, VP_SCALED, DWVP]
+    acceleration_scale: 1.0
+    length_m: 2.5
+    spacing_m: 0.01
+    orientation_start_m: 1.0
+    orientation_length_m: 0.3
+    goal_yaw_rad: 1.5707963267948966
+    start_pose: [0.0, 0.0, 0.0]
+  E1_orientation_half:
+    <<: *orientation
+    acceleration_scale: 0.5
+  E2_environment:
+    evaluation: {start_m: 0.0, goal_margin_m: 0.6}
+    methods: [RPP, DWPP, MPPI, DWB, DWVP]
+    acceleration_scale: 1.0
+    start_pose: null
+metrics:
+  lateral_deadband_m: 0.01
+  lateral_convergence_ratio: 0.1
+  obstacle_near_range_m: 0.6
+  robot_radius_m: 0.22
+  maximum_source_age_s: 0.2
+  maximum_unknown_command_pct: 5.0
+surveyed_obstacles: []

@@ -1,0 +1,5 @@
+<library path="dwvp_timed_controller">
+  <class name="dwpp_test_simulation::TimedController" type="dwpp_test_simulation::TimedController" base_class_type="nav2_core::Controller">
+    <description>Measure each delegated controller call with a steady clock.</description>
+  </class>
+</library>

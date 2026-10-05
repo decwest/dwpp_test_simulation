@@ -20,7 +20,7 @@ def generate_launch_description():
         param_rewrites={'use_sim_time': sim_time, 'yaml_filename': LaunchConfiguration('map')},
         convert_types=True)
     nodes = [
-        DeclareLaunchArgument('params_file', default_value=os.path.join(package, 'params', 'hsrb_dwvp_access_params.yaml')),
+        DeclareLaunchArgument('params_file', description='Frozen per-condition parameters selected by SESSION + TRIAL'),
         DeclareLaunchArgument('map', default_value=os.path.join(hsr, 'maps', 'dwvp_exp', 'map.yaml')),
         DeclareLaunchArgument('use_sim_time', default_value='false'),
         DeclareLaunchArgument('autostart', default_value='true'),

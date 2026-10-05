@@ -15,11 +15,14 @@ import signal
 import subprocess
 import sys
 import tempfile
+import yaml
+import numpy as np
 
 import rclpy
 from lifecycle_msgs.msg import Transition
 
-from ros_access_controller_smoke import Plant, spin_for, spin_until, transition
+from ros_access_controller_smoke import (Plant, spin_for, spin_until, controller_stack,
+                                         synthetic_environment_path, check_half_acceleration)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -55,71 +58,98 @@ def main():
     output.mkdir(parents=True, exist_ok=True)
     params = ROOT / 'params/hsrb_dwvp_access_params.yaml'
     print(f'Actual controller + recorder integration artifacts: {output}', flush=True)
-    processes, logs = [], []
+    session = output/'session'
+    route = output/'environment.csv'
+    np.savetxt(route, synthetic_environment_path(), delimiter=',', header='x,y,yaw', comments='')
+    manifest = experiment.prepare(session, params, [0.,0.,0.], route)
     rclpy.init()
     plant = Plant()
+    half_reports = {}
     try:
-        for package, executable, remaps in (
-            ('nav2_controller', 'controller_server', ['cmd_vel:=/cmd_vel_nav']),
-            ('nav2_velocity_smoother', 'velocity_smoother', [
-                'cmd_vel:=/cmd_vel_nav', 'cmd_vel_smoothed:=/omni_base_controller/cmd_vel']),
+        for profile, conditions in (
+            ('nominal', ['E1_lateral', 'E1_orientation_nominal', 'E2_environment']),
+            ('half', ['E1_orientation_half']),
         ):
-            log = (output / f'{executable}.log').open('w')
-            logs.append(log)
-            command = [f'/opt/ros/humble/lib/{package}/{executable}',
-                       '--ros-args', '--params-file', str(params)]
-            for remap in remaps:
-                command.extend(['-r', remap])
-            processes.append(subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT))
-        for name in ('controller_server', 'velocity_smoother'):
-            transition(plant, name, Transition.TRANSITION_CONFIGURE)
-            transition(plant, name, Transition.TRANSITION_ACTIVATE)
-        snapshots = {}
-        for name in ('controller_server', 'velocity_smoother'):
-            snapshots[name] = output / f'{name}_runtime.yaml'
-            # Keep middleware diagnostics out of the machine-readable YAML.
-            run_while_spinning(
-                plant, ['ros2', 'param', 'dump', '/' + name], snapshots[name], 20.0,
-                separate_stderr=True)
-        for controller in ('RPP', 'DWPP', 'MPPI', 'DWVP'):
-            experiment.verify_runtime_parameters(params, snapshots, controller)
-            print(f'Actual runtime configuration verified: {controller}', flush=True)
-        spin_for(plant, 0.5)
-        session = output / 'session'
-        experiment.prepare(session, params, [0.0, 0.0, 0.0])
-        run_while_spinning(plant, [
-            sys.executable, str(ROOT / 'scripts/dwvp_access_experiment.py'), 'run',
-            '--session', str(session), '--trial', 'B_path1_DWVP_r1'],
-            output / 'recorder.log', 60.0)
-        report = experiment.summarize(session)
-        trial = report['trials'][0]
-        result = json.loads((session / 'runs/B_path1_DWVP_r1/result.json').read_text())
-        summary = {
-            'purpose': 'Synthetic integration smoke; not paper performance data',
-            'verified_controller_parameters': ['RPP', 'DWPP', 'MPPI', 'DWVP'],
-            'trial': trial, 'group': report['groups'][0], 'result': result,
-        }
-        (output / 'report.json').write_text(json.dumps(summary, indent=2) + '\n')
-        print(json.dumps(summary, indent=2), flush=True)
-        assert trial['success'], trial
-        assert trial['valid_pose_samples'] > 30, trial
-        assert report['groups'][0]['valid_successes'] == 1, summary
-        assert plant.max_vy > 0.01, 'Independent heading corner must produce lateral motion'
-        print('PASS: actual runtime parameters, FollowPath, recorder, and valid summary', flush=True)
+            frozen = session / manifest['parameter_sets'][conditions[0]]['file']
+            with controller_stack(plant, frozen, output / profile):
+                snapshots = {}
+                for name in ('controller_server', 'velocity_smoother'):
+                    snapshots[name] = output / f'{profile}_{name}_runtime.yaml'
+                    snapshots[name].write_text(yaml.safe_dump(experiment.snapshot_parameters(plant, name)))
+                for controller in experiment.CONTROLLERS:
+                    experiment.verify_runtime_parameters(frozen, snapshots, controller)
+                if profile == 'nominal':
+                    check_rejections(plant, session, output)
+                trials = [t for t in manifest['trials'] if t['repeat']==1 and t['task'] in conditions]
+                for selected in trials:
+                    controller, condition = selected['controller'], selected['task']
+                    spin_for(plant,2.3)
+                    plant.reset(experiment.start_pose(manifest, selected))
+                    spin_for(plant,.5)
+                    trial_id=selected['id']
+                    run_while_spinning(plant,[sys.executable,str(ROOT/'scripts/dwvp_access_experiment.py'),'preflight',
+                        '--session',str(session),'--trial',trial_id],output/f'{trial_id}_preflight.log',40.)
+                    run_while_spinning(plant,[sys.executable,str(ROOT/'scripts/dwvp_access_experiment.py'),'run',
+                        '--session',str(session),'--trial',trial_id],output/f'{trial_id}_recorder.log',160.)
+                    report=experiment.summarize(session)
+                    trial=next(t for t in report['trials'] if t['trial_id']==trial_id)
+                    assert trial['success'] and trial['fresh_pose_samples']>30 and not trial['data_errors'], trial
+                    commands=report['command_diagnostics'][trial_id]
+                    assert commands['constraint_total_samples']>10, commands
+                    assert commands['constraint_total_samples']==commands['constraint_evaluable_samples']+commands['constraint_unknown_samples'], commands
+                    assert trial['constraint_violation_pct']==commands['constraint_violation_pct'], trial
+                    expected=100.*commands['constraint_violation_samples']/commands['constraint_evaluable_samples']
+                    assert abs(trial['constraint_violation_pct']-expected)<1e-10, trial
+                    assert trial['constraint_violation_lower_pct'] <= expected <= trial['constraint_violation_upper_pct'], trial
+                    assert trial['constraint_unknown_flag'] == (trial['constraint_unknown_pct']>5.), trial
+                    assert commands['pairing_clock']=='receive_monotonic_s', commands
+                    for key in ('eval_max_position_error_m','eval_mean_position_error_m',
+                                'eval_position_error_integral_m_s','eval_max_heading_error_deg',
+                                'eval_mean_heading_error_deg','eval_heading_error_integral_deg_s'):
+                        assert trial[key] is not None, trial
+                    timing=report['controller_timing'][trial_id]
+                    assert timing['samples']>10 and timing['sequence_gaps']==0 and timing['failed_calls']==0, timing
+                    assert timing.get('sequence_nonincreasing',0)==0, timing
+                    assert timing['invalid_samples']==0, timing
+                    # The controller server can publish an extra terminal zero command.
+                    assert abs(timing['raw_minus_successful_timing_samples'])<=3, timing
+                    group=next(g for g in report['groups'] if g['task']==condition and g['controller']==controller)
+                    # Quality accounting remains visible; flags do not discard observations.
+                    eligible = (trial['invalid_after_warmup_samples']==0
+                                and trial['missing_command_prefix_s'] is not None
+                                and trial['missing_command_prefix_s']<=1/manifest['control_frequency_hz'])
+                    assert group['recorded']==1 and group['succeeded']==1, group
+                    assert group['valid_successes']==int(eligible), group
+                    assert group['travel_time_s_n']==1, group
+                    assert group['constraint_violation_pct_n']==1, group
+                    assert group['compute_time_mean_ms_n']==1, group
+                    if condition == 'E1_orientation_half':
+                        half_reports[controller] = check_half_acceleration(plant)
+                        assert trial['acceleration_scale'] == .5
+                    print(f'Actual recorder verified: {trial_id}; quality-qualified={eligible}', flush=True)
+                spin_for(plant, 2.3)
+        (output/'report.json').write_text(json.dumps({'purpose':'Synthetic integration on uncommitted working tree only',
+            'physical_trials':0,'start_pose_rejection':True,'unassigned_rejection':True,
+            'half_acceleration':half_reports,'summary':report},indent=2)+'\n')
+        print('PASS: all seven controllers, assigned conditions, half acceleration, timing, recorder and summary',flush=True)
     finally:
-        for process in processes:
-            if process.poll() is None:
-                process.send_signal(signal.SIGINT)
-        for process in processes:
-            try:
-                process.wait(timeout=5.0)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait()
-        for log in logs:
-            log.close()
         plant.destroy_node()
         rclpy.shutdown()
+
+
+def check_rejections(plant, session, output):
+    for trial_id, reason in [('E1_lateral_DWVP_r1', 'frozen condition start pose'),
+                             ('E1_lateral_MPPI_r1', 'unassigned'),
+                             ('E1_orientation_half_DWVP_r1', 'Runtime parameter mismatch')]:
+        rejected = output / f'rejected_{trial_id}.log'
+        try:
+            run_while_spinning(plant,[sys.executable,str(ROOT/'scripts/dwvp_access_experiment.py'),'preflight',
+                '--session',str(session),'--trial',trial_id],rejected,40.)
+        except AssertionError:
+            assert reason in rejected.read_text(), rejected.read_text()
+        else:
+            raise AssertionError('Invalid start or method assignment accepted')
+    assert not (session/'runs').exists()
 
 
 if __name__ == '__main__':

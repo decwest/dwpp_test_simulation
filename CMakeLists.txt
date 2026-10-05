@@ -7,6 +7,18 @@ endif()
 
 # find dependencies
 find_package(ament_cmake REQUIRED)
+find_package(nav2_core REQUIRED)
+find_package(nav2_util REQUIRED)
+find_package(pluginlib REQUIRED)
+find_package(rclcpp REQUIRED)
+find_package(rclcpp_lifecycle REQUIRED)
+find_package(diagnostic_msgs REQUIRED)
+add_library(dwvp_timed_controller SHARED src/timed_controller.cpp)
+target_compile_features(dwvp_timed_controller PUBLIC cxx_std_17)
+ament_target_dependencies(dwvp_timed_controller nav2_core nav2_util pluginlib
+  rclcpp rclcpp_lifecycle diagnostic_msgs)
+pluginlib_export_plugin_description_file(nav2_core timed_controller.xml)
+install(TARGETS dwvp_timed_controller LIBRARY DESTINATION lib)
 # uncomment the following section in order to fill in
 # further dependencies manually.
 # find_package(<dependency> REQUIRED)
@@ -19,8 +31,11 @@ install(PROGRAMS
   scripts/follow_path_test_gui.py
   scripts/follow_path_test_gui_real.py
   scripts/dwvp_access_experiment.py
+  scripts/dwvp_access_path.py
   DESTINATION lib/${PROJECT_NAME}
 )
+
+install(FILES scripts/dwvp_access_metrics.py scripts/dwvp_access_noise.py DESTINATION lib/${PROJECT_NAME})
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
