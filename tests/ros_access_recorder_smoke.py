@@ -202,7 +202,7 @@ def main():
                     completed = subprocess.run(command, timeout=45, capture_output=True, text=True)
                     assert completed.returncode == (1 if mode == 'late_acceptance' else 0), completed.stdout + completed.stderr
                 report = experiment.summarize(session)
-                assert report['recorded'] == 1 and report['pending'] == 64
+                assert report['recorded'] == 1 and report['pending'] == 79
                 trial = report['trials'][0]
                 result = json.loads((session / 'runs' / trial_id / 'result.json').read_text())
                 if mode in ('normal', 'late_streams', 'stale_source'):

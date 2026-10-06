@@ -168,7 +168,7 @@ def test_group_means_sample_sd_and_partial_attempts(tmp_path):
     assert g['travel_time_s_n']==1 and g['travel_time_s_sd'] is None
 
 
-@pytest.mark.parametrize('index', range(8))
+@pytest.mark.parametrize('index', range(11))
 def test_simulator_trajectories_through_session_summary(tmp_path, index):
     assert os.environ.get('DWVP_METRICS_REFERENCE'), 'Run scripts/verify_hardware_tooling.sh to generate locked simulator references'
     reference = Path(os.environ['DWVP_METRICS_REFERENCE'])

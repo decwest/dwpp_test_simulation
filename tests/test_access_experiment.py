@@ -15,22 +15,25 @@ experiment = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(experiment)
 
 
-def test_balanced_reproducible_65_trial_schedule(tmp_path):
+def test_balanced_reproducible_80_trial_schedule(tmp_path):
     params = ROOT / 'params/hsrb_dwvp_access_params.yaml'
     one = experiment.prepare(tmp_path / 'one', params)
     two = experiment.prepare(tmp_path / 'two', params)
-    assert len(one['trials']) == len({t['id'] for t in one['trials']}) == 65
+    assert len(one['trials']) == len({t['id'] for t in one['trials']}) == 80
     assert one['trials'] == two['trials']
     counts = Counter((t['task'], t['controller']) for t in one['trials'])
     assert all(n == 5 for n in counts.values())
-    assert len(counts) == 13
+    assert len(counts) == 16
+    assert Counter(t['task'] for t in one['trials']) == {
+        'E1_lateral': 10, 'E1_orientation_nominal': 15,
+        'E1_orientation_half': 15, 'E1_orientation_quarter': 15, 'E2_environment': 25}
     assert {k[1] for k in counts} == set(experiment.CONTROLLERS)
     for repeat in range(1, 6):
         for task in experiment.CONDITIONS:
             block = [t for t in one['trials'] if t['repeat'] == repeat and t['task'] == task]
             assert {t['controller'] for t in block} == set(experiment.default_config()['conditions'][task]['methods'])
     assert one['paths']['E2_environment']['file'] is None
-    assert experiment.summarize(tmp_path / 'one')['pending'] == 65
+    assert experiment.summarize(tmp_path / 'one')['pending'] == 80
 
 
 def test_condition_geometry_and_configurable_start():
@@ -40,6 +43,7 @@ def test_condition_geometry_and_configurable_start():
     np.testing.assert_allclose(ramp[[0,100,115,130,-1]],
                                [[0,0,0],[1,0,0],[1.15,0,np.pi/4],[1.3,0,np.pi/2],[2.5,0,np.pi/2]])
     np.testing.assert_array_equal(ramp, experiment.canonical_path('E1_orientation_half'))
+    np.testing.assert_array_equal(ramp, experiment.canonical_path('E1_orientation_quarter'))
     assert len(ramp) == 251 and np.all(np.diff(ramp[:,2]) >= 0)
     config = experiment.default_config()
     config['conditions']['E1_lateral']['length_m'] = 1.8
@@ -70,7 +74,7 @@ def test_status_reports_unready_and_incomplete_trials_without_writing(tmp_path):
     experiment.prepare(root, ROOT / 'params/hsrb_dwvp_access_params.yaml', [0, 0, 0])
     before = set(root.rglob('*'))
     states = {r['trial']: r['status'] for r in experiment.session_status(root)}
-    assert len(states) == 65 and states['E2_environment_RPP_r1'] == 'needs_route'
+    assert len(states) == 80 and states['E2_environment_RPP_r1'] == 'needs_route'
     assert states['E1_orientation_nominal_DWVP_r1'] == 'pending'
     assert set(root.rglob('*')) == before
     folder = root / 'runs/E1_orientation_nominal_DWVP_r1'
@@ -121,7 +125,7 @@ def test_failed_runs_remain_in_counts_and_never_get_success_means(tmp_path):
     (folder / 'tracking.csv').write_text('t,stamp_s,x,y,yaw,tf_age_s,raw_age_s,applied_age_s,odom_age_s,odom_source_age_s\n0,1,0,0,0,0,0,0,0,0\n')
     np.savetxt(folder / 'reference.csv', experiment.canonical_path('E1_lateral'), delimiter=',', header='x,y,yaw', comments='')
     report = experiment.summarize(root)
-    assert report['recorded'] == 1 and report['pending'] == 64
+    assert report['recorded'] == 1 and report['pending'] == 79
     assert next(g for g in report['groups'] if g['task'] == report['trials'][0]['task'] and g['controller'] == report['trials'][0]['controller'])['succeeded'] == 0
     assert next(g for g in report['groups'] if g['task'] == report['trials'][0]['task'] and g['controller'] == report['trials'][0]['controller'])['travel_time_s_mean'] is None
 
@@ -306,7 +310,7 @@ def test_incomplete_and_missing_files_remain_counted(tmp_path):
     root=tmp_path/'s';experiment.prepare(root,ROOT/'params/hsrb_dwvp_access_params.yaml',[0,0,0])
     (root/'runs/E1_lateral_DWPP_r1').mkdir(parents=True)
     report=experiment.summarize(root)
-    assert report['recorded']==1 and report['pending']==64 and len(report['groups'])==13
+    assert report['recorded']==1 and report['pending']==79 and len(report['groups'])==16
     assert report['trials'][0]['status']=='incomplete'
     assert 'tracking.csv' in report['trials'][0]['data_errors']
     group=next(g for g in report['groups'] if g['task']=='E1_lateral' and g['controller']=='DWPP')
@@ -426,28 +430,40 @@ def test_constraint_percentage_invalid_latest_applied_cannot_use_older_sample(tm
 
 
 @pytest.mark.parametrize('method', ['VP_CLIP', 'VP_SCALED', 'DWVP'])
-def test_half_acceleration_is_shared_by_controller_smoother_and_metrics(tmp_path, method):
-    root, folder, name = make_attempt(tmp_path, 'E1_orientation_half', method)
+@pytest.mark.parametrize('condition,limits', [
+    ('E1_orientation_half', [.11, .11, .3]),
+    ('E1_orientation_quarter', [.055, .055, .15]),
+])
+@pytest.mark.parametrize('sign', [-1, 1])
+def test_acceleration_is_shared_by_controller_smoother_and_metrics(tmp_path, method, condition, limits, sign):
+    root, folder, name = make_attempt(tmp_path, condition, method)
     manifest, trial, _ = experiment.load_trial(root, name)
     params = yaml.safe_load((root / trial['params_file']).read_text())
     ctrl = params['controller_server']['ros__parameters'][method]
     smooth = params['velocity_smoother']['ros__parameters']
-    assert [ctrl['max_accel_' + axis] for axis in ('x','y','theta')] == [.11,.11,.3]
-    assert smooth['max_accel'] == [.11,.11,.3]
-    assert smooth['max_decel'] == [-.11,-.11,-.3]
-    (folder/'raw.csv').write_text('stamp_s,vx,vy,omega\n10.1,.005,0,0\n')
-    (folder/'applied.csv').write_text('stamp_s,vx,vy,omega\n10.09,0,0,0\n')
+    assert [ctrl['max_accel_' + axis] for axis in ('x','y','theta')] == limits
+    assert smooth['max_accel'] == limits
+    assert smooth['max_decel'] == [-value for value in limits]
+    # Each axis exceeds this profile's increment, but fits the next larger profile.
+    # Check both acceleration from zero and deceleration back to zero.
+    command = ','.join(str(sign * 1.5 * value / 30) for value in limits)
+    (folder/'raw.csv').write_text(f'stamp_s,vx,vy,omega\n10.1,{command}\n10.2,0,0,0\n')
+    (folder/'applied.csv').write_text(f'stamp_s,vx,vy,omega\n10.09,0,0,0\n10.19,{command}\n')
     diag = experiment.summarize(root)['command_diagnostics'][name]
     assert diag['constraint_violation_pct'] == 100.
-    assert diag['vx_increment_excess_ratio_max'] == pytest.approx(.005/(.11/30)-1)
+    for axis in ('vx', 'vy', 'omega'):
+        assert diag[axis + '_increment_excess_ratio_max'] == pytest.approx(.5)
 
 
-def test_unassigned_combination_and_wrong_profile_are_rejected(tmp_path):
+@pytest.mark.parametrize('condition', ['E1_orientation_half', 'E1_orientation_quarter'])
+def test_unassigned_combination_and_wrong_profile_are_rejected(tmp_path, condition):
     root=tmp_path/'session'
     manifest=experiment.prepare(root,ROOT/'params/hsrb_dwvp_access_params.yaml',[0,0,0])
     with pytest.raises(ValueError,match='unassigned'):
         experiment.load_trial(root,'E1_lateral_MPPI_r1')
-    trial = next(t for t in manifest['trials'] if t['id']=='E1_orientation_half_DWVP_r1')
+    with pytest.raises(ValueError,match='unassigned'):
+        experiment.load_trial(root,condition+'_DWB_r1')
+    trial = next(t for t in manifest['trials'] if t['id']==condition+'_DWVP_r1')
     trial['params_file'] = manifest['parameter_sets']['E1_orientation_nominal']['file']
     trial['params_sha256'] = manifest['parameter_sets']['E1_orientation_nominal']['sha256']
     experiment.write_json(root/'manifest.json', manifest)

@@ -22,7 +22,7 @@ import rclpy
 from lifecycle_msgs.msg import Transition
 
 from ros_access_controller_smoke import (Plant, spin_for, spin_until, controller_stack,
-                                         synthetic_environment_path, check_half_acceleration)
+                                         synthetic_environment_path, check_acceleration)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -64,11 +64,13 @@ def main():
     manifest = experiment.prepare(session, params, [0.,0.,0.], route)
     rclpy.init()
     plant = Plant()
-    half_reports = {}
+    acceleration_reports = {'half': {}, 'quarter': {}}
+    config = experiment.default_config()
     try:
         for profile, conditions in (
             ('nominal', ['E1_lateral', 'E1_orientation_nominal', 'E2_environment']),
             ('half', ['E1_orientation_half']),
+            ('quarter', ['E1_orientation_quarter']),
         ):
             frozen = session / manifest['parameter_sets'][conditions[0]]['file']
             with controller_stack(plant, frozen, output / profile):
@@ -123,15 +125,16 @@ def main():
                     assert group['travel_time_s_n']==1, group
                     assert group['constraint_violation_pct_n']==1, group
                     assert group['compute_time_mean_ms_n']==1, group
-                    if condition == 'E1_orientation_half':
-                        half_reports[controller] = check_half_acceleration(plant)
-                        assert trial['acceleration_scale'] == .5
+                    if profile in acceleration_reports:
+                        acceleration_reports[profile][controller] = check_acceleration(plant, config, condition)
+                        assert trial['acceleration_scale'] == config['conditions'][condition]['acceleration_scale']
                     print(f'Actual recorder verified: {trial_id}; quality-qualified={eligible}', flush=True)
                 spin_for(plant, 2.3)
         (output/'report.json').write_text(json.dumps({'purpose':'Synthetic integration on uncommitted working tree only',
             'physical_trials':0,'start_pose_rejection':True,'unassigned_rejection':True,
-            'half_acceleration':half_reports,'summary':report},indent=2)+'\n')
-        print('PASS: all seven controllers, assigned conditions, half acceleration, timing, recorder and summary',flush=True)
+            'half_acceleration':acceleration_reports['half'],
+            'quarter_acceleration':acceleration_reports['quarter'],'summary':report},indent=2)+'\n')
+        print('PASS: all seven controllers, assigned conditions, half/quarter acceleration, timing, recorder and summary',flush=True)
     finally:
         plant.destroy_node()
         rclpy.shutdown()
@@ -140,7 +143,9 @@ def main():
 def check_rejections(plant, session, output):
     for trial_id, reason in [('E1_lateral_DWVP_r1', 'frozen condition start pose'),
                              ('E1_lateral_MPPI_r1', 'unassigned'),
-                             ('E1_orientation_half_DWVP_r1', 'Runtime parameter mismatch')]:
+                             ('E1_orientation_half_DWVP_r1', 'Runtime parameter mismatch'),
+                             ('E1_orientation_quarter_DWVP_r1', 'Runtime parameter mismatch'),
+                             ('E1_orientation_quarter_DWB_r1', 'unassigned')]:
         rejected = output / f'rejected_{trial_id}.log'
         try:
             run_while_spinning(plant,[sys.executable,str(ROOT/'scripts/dwvp_access_experiment.py'),'preflight',

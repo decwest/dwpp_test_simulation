@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare 65 fixed-path trials, record one ROS trial, and summarize completed data.
+"""Prepare 80 fixed-path trials, record one ROS trial, and summarize completed data.
 
 Preparation and analysis do not import ROS. Only the explicit ``run`` subcommand
 sends a FollowPath goal. A session fixes one map origin for all methods.
@@ -38,7 +38,8 @@ def arclength(xy):
 
 
 CONTROLLERS = ('RPP', 'DWPP', 'MPPI', 'DWB', 'VP_CLIP', 'VP_SCALED', 'DWVP')
-CONDITIONS = ('E1_lateral', 'E1_orientation_nominal', 'E1_orientation_half', 'E2_environment')
+CONDITIONS = ('E1_lateral', 'E1_orientation_nominal', 'E1_orientation_half',
+              'E1_orientation_quarter', 'E2_environment')
 
 
 def default_config():
@@ -121,7 +122,7 @@ def canonical_path(name, config=None):
     if name == 'E1_lateral':
         x = samples(settings['length_m'])
         return np.c_[x, np.zeros(len(x)), np.zeros(len(x))]
-    if name in ('E1_orientation_nominal', 'E1_orientation_half'):
+    if name in ('E1_orientation_nominal', 'E1_orientation_half', 'E1_orientation_quarter'):
         x = samples(settings['length_m'])
         start, length = settings['orientation_start_m'], settings['orientation_length_m']
         if not (0 < start < start + length < settings['length_m']):

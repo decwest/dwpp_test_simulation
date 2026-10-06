@@ -1,9 +1,9 @@
 # DWVP Access hardware recording protocol
 
-This revision prepares **65 trials; physical HSR trials remain zero**. Each assigned
+This revision prepares **80 trials; physical HSR trials remain zero**. Each assigned
 condition/controller combination has five repeats: lateral alignment (DWPP, DWVP;
-10 trials), orientation ramp at nominal and half acceleration (VP_CLIP, VP_SCALED,
-DWVP; 30 trials), and environment routes (RPP, DWPP, MPPI Omni, DWB, DWVP; 25 trials).
+10 trials), orientation ramp at nominal, half and quarter acceleration (VP_CLIP, VP_SCALED,
+DWVP; 45 trials), and environment routes (RPP, DWPP, MPPI Omni, DWB, DWVP; 25 trials).
 Experiment 1 checks simulated properties in a noisy, delayed system; Experiment 2
 compares existing local planners. Synthetic checks are integration evidence only.
 
@@ -29,9 +29,12 @@ callbacks, with a 15 s monotonic deadline per node; no CLI daemon cache is used.
 The nominal lookahead is 0.75 s, bounded by 0.11 and 0.33 m, with 30 Hz
 control. The component velocity bounds are ±(0.22, 0.22, 0.6), and component
 acceleration/deceleration magnitudes are (0.22, 0.22, 0.6), in SI units.
-`E1_orientation_half` uses (0.11, 0.11, 0.3) for both signs. The frozen condition
+`E1_orientation_half` uses (0.11, 0.11, 0.3) and
+`E1_orientation_quarter` uses (0.055, 0.055, 0.15) for both signs. The frozen condition
 `acceleration_scale` feeds controller rendering, smoother rendering and constraint
-metrics through the same `condition_common` helper. All
+metrics through the same `condition_common` helper. Prepare a new session
+to include the quarter profile; existing frozen sessions retain their original IDs.
+The existing 120 s trial timeout covers the expected approximately 30 s quarter-profile run. All
 methods use the same OPEN_LOOP velocity smoother. Humble MPPI lacks newer
 per-axis acceleration parameters; its raw output is not assumed to obey those
 constraints. MPPI retains ECPP experiment 2's `use_path_orientations=false`;
@@ -70,7 +73,8 @@ lowering only the stopped threshold from 0.11 to 0.005 m/s as an HSR adaptation.
 The threshold is below the per-axis velocity increment, `0.22 / 30 = 0.007333 m/s`,
 so stopping within one control cycle is feasible when RotateToGoal requires
 zero translation. The previous 0.11 m/s setting completed the route but had
-one failed controller call. No tests or timing boundaries have been changed.
+one failed controller call. That stopped-threshold update kept the existing
+tests and timing boundaries.
 See the configuration document for the candidates and the half-acceleration
 limit (13.636 s). DWB remains assigned only to nominal E2; no horizon scaling
 is implemented. Full results are recorded in the manuscript's
@@ -81,7 +85,7 @@ is implemented. Full results are recorded in the manuscript's
 | Condition | Reference geometry and yaw | Required initial pose |
 |---|---|---|
 | E1_lateral | Local (0,0) to (2.5,0), yaw=0 | Local (0,0.5,0) |
-| E1_orientation_nominal / E1_orientation_half | Straight 2.5 m; yaw=0 up to 1.0 m, linear 0→π/2 over 1.0–1.3 m, then π/2; spacing 0.01 m | Local (0,0,0) |
+| E1_orientation_nominal / E1_orientation_half / E1_orientation_quarter | Straight 2.5 m; yaw=0 up to 1.0 m, linear 0→π/2 over 1.0–1.3 m, then π/2; spacing 0.01 m | Local (0,0,0) |
 | E2_environment | Saved NavFn positions, smoothed, with forward tangent yaw | Map pose in settings, otherwise planner metadata start, otherwise first CSV pose |
 
 E1 poses are transformed by the fixed `--origin`. E2 CSVs and obstacle survey
@@ -156,7 +160,7 @@ call site, not estimated from message arrival intervals.
 ## Metrics and quality accounting
 
 `summary.json` and `trial_metrics.csv` retain every attempted trial, including
-failures and partial records. All 13 planned groups remain visible with recorded,
+failures and partial records. All 16 planned groups remain visible with recorded,
 pending, success, quality-qualified and evaluation-complete counts. Each metric
 uses all finite observed values and reports mean, sample SD (n−1), and its own n.
 Flags never discard a trial; missing values remain null. SD is null for n < 2.
@@ -334,25 +338,28 @@ DWVP_ACCESS_VERIFY_ROOT=$(mktemp -d /tmp/dwvp-access-validation.XXXXXX) \
   DWVP_HUMBLE_IMAGE=docker-hsr:latest ./scripts/verify_hardware_tooling.sh
 ```
 
-The hardware entrypoint first generates eight 2.5 m trajectories with the simulator
+The hardware entrypoint first generates eleven 2.5 m trajectories with the simulator
 mounted read-only, using `uv run --offline --locked --python 3.11.11 --no-sync`.
 It reuses the existing virtual environment and interpreter; override paths with
 `DWVP_SIMULATOR_ROOT` or `DWVP_UV_BINARY` when needed. No dependencies are installed.
 The HSR Python 3.10 summary reads their saved poses and exact command histories.
-The 86 comparisons cover six errors, violation percentage, travel time, evaluation
+The 119 comparisons cover six errors, violation percentage, travel time, evaluation
 duration and matching transients; absolute tolerance is 1e-9 in each metric's unit,
 relative tolerance zero. Timing is excluded from cross-language numerical equality.
 Analytical tests cover irregular timestamps, constant/triangular errors, windows,
 gaps, ramp lag/overshoot, transformed paths, unknown bounds and noise statistics.
 
 The hardware entrypoint builds four packages, runs Python 3.10 unit tests,
-recorder failure/freshness/cancellation checks, 13 actual-controller goals,
-13 actual-controller/recorder integrations, NavFn generation/import and launch
-argument inspection. Every assigned combination is exercised once, including both
+recorder failure/freshness/cancellation checks, 16 actual-controller goals,
+16 actual-controller/recorder integrations, NavFn generation/import and launch
+argument inspection. Every assigned combination is exercised once, including all three
 orientation acceleration profiles. Unassigned combinations and the wrong lateral
 start are rejected. All seven methods must produce per-call timing records.
-For the three half-acceleration VP methods, consecutive raw-controller command
-changes and smoother-output changes must be at most (0.11,0.11,0.3)/30 per cycle.
+For each of VP_CLIP, VP_SCALED and DWVP, consecutive raw-controller command
+changes and smoother-output changes must be at most (0.11,0.11,0.3)/30 per cycle
+for the half profile and (0.055,0.055,0.15)/30 for the quarter profile. The assertion
+tolerance is 1e-8 in each velocity component. The existing synthetic action timeout
+of 120 s and recorder-process timeout of 160 s cover the quarter profile.
 Only Nav2's extra terminal zero suffix, emitted outside the controller, is omitted
 from the raw-controller increment assertion; recorded metric streams retain it.
 This consecutive-command assertion is distinct from the recorder metric, which
@@ -364,7 +371,7 @@ A successful ROS goal can still contain scheduling/clock gaps; tests require the
 quality counters to remain visible and finite observations to remain in group means.
 
 The current two-round results and source hashes are documented in the manuscript
-copy at `docs/hardware/metrics_alignment_verification.md`. They concern the
+copy at `docs/hardware/quarter_acceleration_verification.md`. They concern the
 **uncommitted working tree with synthetic inputs**, with zero physical HSR trials.
 The older synthetic JSON and `method_update_verification.md` remain historical.
 Real AMCL, sensors, robot dynamics and the RViz screen have not been validated.

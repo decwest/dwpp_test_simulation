@@ -1,4 +1,4 @@
-"""Generate eight trajectories with the read-only simulator's locked Python 3.11.
+"""Generate eleven trajectories with the read-only simulator's locked Python 3.11.
 
 Outputs belong in /tmp. No experiment-tool metrics are imported here.
 """
@@ -24,7 +24,8 @@ def main():
     for condition, methods, scale in (
             ('E1_lateral', ('dwpp','dwvp'), 1.),
             ('E1_orientation_nominal', ('vp','vp_scaled','dwvp'), 1.),
-            ('E1_orientation_half', ('vp','vp_scaled','dwvp'), .5)):
+            ('E1_orientation_half', ('vp','vp_scaled','dwvp'), .5),
+            ('E1_orientation_quarter', ('vp','vp_scaled','dwvp'), .25)):
         lateral = condition == 'E1_lateral'
         path = straight_path(2.5, .01) if lateral else orientation_ramp_path(.3, length=2.5, start=1., spacing=.01)
         initial = [0., .5 if lateral else 0., 0.]

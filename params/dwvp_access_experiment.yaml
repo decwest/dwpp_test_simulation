@@ -53,6 +53,9 @@ conditions:
   E1_orientation_half:
     <<: *orientation
     acceleration_scale: 0.5
+  E1_orientation_quarter:
+    <<: *orientation
+    acceleration_scale: 0.25
   E2_environment:
     evaluation: {start_m: 0.0, goal_margin_m: 0.6}
     methods: [RPP, DWPP, MPPI, DWB, DWVP]

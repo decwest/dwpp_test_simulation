@@ -17,7 +17,7 @@ COMMON_METRICS = ('eval_max_position_error_m', 'eval_mean_position_error_m',
 def transient_metrics(task):
     if task == 'E1_lateral':
         return ('crossing_m',)
-    if task in ('E1_orientation_nominal', 'E1_orientation_half'):
+    if task in ('E1_orientation_nominal', 'E1_orientation_half', 'E1_orientation_quarter'):
         return ('transition_heading_lag_deg', 'post_transition_heading_overshoot_deg')
     return ()
 
@@ -372,7 +372,7 @@ def summarize_session(session, tracking_errors):
                         if fresh[:original_index+1].all():
                             xy = np.vstack((manifest['starts'][trial['task']]['map_pose'][:2],poses[:hit[0]+1,:2]))
                             row['lateral_convergence_distance_m']=float(np.linalg.norm(np.diff(xy,axis=0),axis=1).sum())
-                if trial['task'] in ('E1_orientation_nominal', 'E1_orientation_half'):
+                if trial['task'] in ('E1_orientation_nominal', 'E1_orientation_half', 'E1_orientation_quarter'):
                     signed = tracking_errors(poses, path, signed=True)[:, 1]
                     row['yaw_lead_max_rad'] = float(max(0., signed.max()))
                     row['yaw_lag_max_rad'] = float(max(0., -signed.min()))

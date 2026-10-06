@@ -210,6 +210,7 @@ def run_case(plant, action, controller, condition):
     spin_until(plant, future.done, 10.)
     handle = future.result()
     assert handle.accepted, f'{controller} rejected {condition}'
+    accepted_at = time.monotonic()
     result_future = handle.get_result_async()
     try:
         spin_until(plant, result_future.done, 120.)
@@ -218,27 +219,31 @@ def run_case(plant, action, controller, condition):
         spin_until(plant, cancellation.done, 5.)
         raise
     result = result_future.result()
+    travel_time = time.monotonic() - accepted_at
     position_error = math.hypot(plant.x-reference[-1,0], plant.y-reference[-1,1])
     yaw_error = float(experiment.wrap(plant.yaw-reference[-1,2]))
     report = {'controller':controller,'task':condition,'status':result.status,
+              'travel_time_s':travel_time,
               'final_position_error_m':position_error,'final_yaw_error_rad':yaw_error,
               'max_abs_applied_vy_m_s':plant.max_vy,'raw_samples':plant.raw_count,'applied_samples':plant.applied_count}
     print(json.dumps(report), flush=True)
     assert result.status == GoalStatus.STATUS_SUCCEEDED, report
     assert plant.raw_count > 10 and plant.applied_count > 10, report
     assert position_error <= .12 and abs(yaw_error) <= .32, report
-    if condition == 'E1_orientation_half':
-        report['half_acceleration'] = check_half_acceleration(plant)
+    if condition in ('E1_orientation_half', 'E1_orientation_quarter'):
+        report['acceleration'] = check_acceleration(plant, config, condition)
     return report
 
 
-def check_half_acceleration(plant):
+def check_acceleration(plant, config, condition):
     raw = np.asarray(plant.raw_history)
     # Nav2 publishes an extra terminal stop outside computeVelocityCommands.
     # Exclude only that zero suffix from the controller per-call increment test.
     while len(raw) and np.all(raw[-1] == 0):
         raw = raw[:-1]
-    bound = np.array([.11, .11, .3]) / 30.
+    common = experiment.condition_common(config, condition)
+    bound = np.array(common['max_accel']) / common['control_frequency_hz']
+    np.testing.assert_allclose(-np.array(common['max_decel']), common['max_accel'])
     assert len(raw) > 30
     changes = np.abs(np.diff(np.vstack((np.zeros(3), raw)), axis=0))
     maximum = changes.max(axis=0)
@@ -309,6 +314,7 @@ def main():
         for profile, conditions in (
             ('nominal', ['E1_lateral', 'E1_orientation_nominal', 'E2_environment']),
             ('half', ['E1_orientation_half']),
+            ('quarter', ['E1_orientation_quarter']),
         ):
             materialized = output / f'nav2_params_{profile}.yaml'
             materialized.write_text(yaml.safe_dump(experiment.render_parameters(args.params, config, conditions[0])))
@@ -335,7 +341,7 @@ def main():
             'purpose': 'Synthetic integration smoke on uncommitted working tree; not paper performance data',
             'cases': reports, 'physical_trials': 0,
         }, indent=2) + '\n')
-        print('PASS: seven controllers, four condition/profile combinations, half-acceleration bounds', flush=True)
+        print('PASS: seven controllers, five condition/profile combinations, half/quarter acceleration bounds', flush=True)
     finally:
         plant.destroy_node()
         rclpy.shutdown()
