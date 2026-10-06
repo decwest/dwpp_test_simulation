@@ -318,7 +318,8 @@ def main():
                                  'DWB.trajectory_generator_name', 'DWB.max_vel_y', 'VP_SCALED.use_uniform_velocity_scaling']
                 response = service(plant, GetParameters, '/controller_server/get_parameters', request)
                 assert list(response.values[0].string_array_value) == list(experiment.CONTROLLERS)
-                assert response.values[1].bool_value and response.values[4].bool_value
+                assert not response.values[1].bool_value  # ECPP experiment 2 baseline.
+                assert response.values[4].bool_value
                 assert response.values[2].string_value == 'dwb_plugins::LimitedAccelGenerator'
                 assert response.values[3].double_value == .22
                 action = ActionClient(plant, FollowPath, '/follow_path')

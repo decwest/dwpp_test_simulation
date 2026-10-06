@@ -34,7 +34,8 @@ acceleration/deceleration magnitudes are (0.22, 0.22, 0.6), in SI units.
 metrics through the same `condition_common` helper. All
 methods use the same OPEN_LOOP velocity smoother. Humble MPPI lacks newer
 per-axis acceleration parameters; its raw output is not assumed to obey those
-constraints. MPPI PathAlignCritic uses path orientations. RPP/DWPP orientation
+constraints. MPPI retains ECPP experiment 2's `use_path_orientations=false`;
+it is assigned only to the tangent-orientation environment route. RPP/DWPP orientation
 errors along the path are marked `reference_only`.
 
 VP_CLIP selects the existing component-clipping branch of the DWVP plugin by
@@ -57,8 +58,23 @@ VP_SCALED sets `use_dynamic_window_vector_pursuit=false` and
 `use_uniform_velocity_scaling=true`. It scales all components together to the
 regulated velocity box (without acceleration), then clips to the common regulated
 dynamic window. It shares VP_CLIP's terminal handling. DWB uses an omnidirectional
-limited-acceleration trajectory generator; [DWB configuration](dwb_configuration.md)
-lists all departures from the Humble bringup baseline and the reasons.
+limited-acceleration trajectory generator. The [MPPI and DWB configuration](dwb_configuration.md)
+compares every parameter with ECPP experiment 2 and records the omnidirectional,
+HSR, Humble and synthetic-completion adaptations.
+
+The 2026-10-06 follow-up uses the cell-width rule
+`0.05 / (0.22 / 30) = 6.818 s` to test DWB at 7.0 s, then 8.0 s.
+Both horizons stalled during the final turn with the default Oscillation reset.
+DWB uses 8.0 s and a 1.0 s reset. The second follow-up explicitly authorizes
+lowering only the stopped threshold from 0.11 to 0.005 m/s as an HSR adaptation.
+The threshold is below the per-axis velocity increment, `0.22 / 30 = 0.007333 m/s`,
+so stopping within one control cycle is feasible when RotateToGoal requires
+zero translation. The previous 0.11 m/s setting completed the route but had
+one failed controller call. No tests or timing boundaries have been changed.
+See the configuration document for the candidates and the half-acceleration
+limit (13.636 s). DWB remains assigned only to nominal E2; no horizon scaling
+is implemented. Full results are recorded in the manuscript's
+`docs/hardware/baseline_planner_verification.md`. Both verification scripts passed twice with exit code 0; both DWB recordings had zero failed controller calls. Physical HSR trials remain zero.
 
 ## Fixed paths and starts
 

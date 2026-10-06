@@ -237,7 +237,7 @@ def test_nominal_tuning_is_rendered_for_all_methods(tmp_path):
         if name not in ('MPPI','DWB'):
             assert cs[name]['lookahead_time']==.9
             assert cs[name]['min_lookahead_dist']==.11 and cs[name]['max_lookahead_dist']==.33
-    assert cs['MPPI']['PathAlignCritic']['use_path_orientations'] is True
+    assert cs['MPPI']['PathAlignCritic']['use_path_orientations'] is False
     assert cs['DWVP']['use_dynamic_window_vector_pursuit'] is True
     assert cs['VP_CLIP']['use_dynamic_window_vector_pursuit'] is False
     assert {k:v for k,v in cs['VP_CLIP'].items() if k!='use_dynamic_window_vector_pursuit'} == {
