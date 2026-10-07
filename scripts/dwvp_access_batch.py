@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run a frozen schedule; record NavFn/DWVP relocations separately from trials."""
+"""Run a frozen schedule; record corridor/NavFn relocations separately from trials."""
 import argparse
 from contextlib import contextmanager
 import csv
@@ -457,9 +457,109 @@ def relocation_path(xy, current, target):
     return experiment.validate_path(np.c_[xy, yaw])
 
 
+def reference_return(reference, current, target, info, blocked, radius):
+    """Join the closest clear part of the frozen corridor and trace it back to S.
+
+    Project onto segments, rather than connecting to a distant waypoint and
+    cutting a corner. This also handles a resume halfway through a return.
+    Body yaw is interpolated independently for the omnidirectional base.
+    """
+    xy = experiment.validate_path(reference)[:, :2]
+    current, target = np.asarray(current), np.asarray(target)
+    # Check the corridor, the exact frozen start connector, and the live footprint
+    # before searching for a clear connector from the stopped pose.
+    assert_clear(xy, info, blocked, radius)
+    assert_clear([xy[0], target[:2]], info, blocked, radius)
+    assert_clear([current[:2], current[:2]], info, blocked, radius)
+    delta = np.diff(xy, axis=0)
+    lengths_squared = np.sum(delta*delta, axis=1)
+    fraction = np.divide(np.sum((current[:2]-xy[:-1])*delta, axis=1), lengths_squared,
+                         out=np.zeros_like(lengths_squared), where=lengths_squared > 0)
+    projections = xy[:-1] + np.clip(fraction, 0, 1)[:, None]*delta
+    last_error = None
+    for index in np.argsort(np.linalg.norm(projections-current[:2], axis=1), kind='stable'):
+        try:
+            assert_clear([current[:2], projections[index]], info, blocked, radius)
+        except PathBlockedError as error:
+            last_error = error
+            continue
+        return relocation_path(np.vstack((projections[index], xy[:index+1][::-1])), current, target)
+    raise last_error
+
+
+def checked_return_path(current, target, map_data, radius, planner, record_file, *, reference=None):
+    """Prefer the E2 corridor; retain diagnostics and check any planner fallback."""
+    info, _, blocked = map_data
+    report = dict(current=list(current), target=list(target), candidates=[], verified=False)
+    if reference is not None:
+        report['frozen_reference'] = np.asarray(reference).tolist()
+    try:
+        sources = ['frozen_reference_reverse', 'navfn'] if reference is not None else ['navfn']
+        for source in sources:
+            candidate = dict(source=source)
+            report['candidates'].append(candidate)
+            try:
+                route = (reference_return(reference, current, target, info, blocked, radius)
+                         if source == 'frozen_reference_reverse' else planner(current, target))
+                candidate['path'] = route.tolist()
+                assert_clear(route, info, blocked, radius)
+            except PathBlockedError as error:
+                candidate.update(error=str(error), obstruction=error.details)
+                if source == sources[-1]:
+                    raise RuntimeError(f'No clear positioning route; no transfer goal sent. See {record_file}') from error
+                print('  Frozen corridor attachment blocked; checking an alternative NavFn route.', flush=True)
+                continue
+            report.update(verified=True, selected=source)
+            return route
+    except BaseException as error:
+        report['error'] = str(error)
+        raise
+    finally:
+        Path(record_file).parent.mkdir(parents=True, exist_ok=True)
+        experiment.write_json(Path(record_file), report)
+
+
 def pose_close(current, target, manifest):
     return (np.linalg.norm(np.asarray(current)[:2]-np.asarray(target)[:2]) <= manifest['xy_tolerance_m']
             and abs(float(experiment.wrap(current[2]-target[2]))) <= manifest['yaw_tolerance_rad'])
+
+
+def checked_fixed_alignment(target, manifest, capture_stop, move, record_file, *, max_attempts=3):
+    """Correct stopped residuals without moving the frozen target or widening its limits."""
+    record_file = Path(record_file)
+    record_file.parent.mkdir(parents=True, exist_ok=True)
+    target = np.asarray(target, dtype=float)
+    report = dict(target=target.tolist(), xy_tolerance_m=manifest['xy_tolerance_m'],
+                  yaw_tolerance_rad=manifest['yaw_tolerance_rad'], attempts=[], verified=False)
+    try:
+        current = capture_stop()
+        report['initial'] = current
+        for attempt in range(1, max_attempts+1):
+            if pose_close(current['pose'], target, manifest):
+                report.update(verified=True, stopped=current)
+                return report
+            result = move(current['pose'], attempt)
+            if (result.get('action_status') != 4 or result.get('settling', {}).get('verified') is not True
+                    or result.get('final_pose_fresh') is not True):
+                raise RuntimeError('Positioning action failed or fresh stopped pose not verified')
+            after = capture_stop()
+            report['attempts'].append(dict(attempt=attempt, before=current, after=after,
+                result_success=result.get('success'), result_error=result.get('error')))
+            current = after
+            experiment.write_json(record_file, report)
+            if pose_close(current['pose'], target, manifest):
+                report.update(verified=True, stopped=current)
+                return report
+            if attempt < max_attempts:
+                print(f'  Positioning stopped outside the frozen start tolerance; '
+                      f'correction {attempt+1}/{max_attempts}', flush=True)
+        raise RuntimeError(f'Positioning did not reach the frozen start after {max_attempts} attempts; '
+                           f'no trial goal sent. See {record_file}')
+    except BaseException as error:
+        report['error'] = str(error)
+        raise
+    finally:
+        experiment.write_json(record_file, report)
 
 
 def stop_process(process):
@@ -501,7 +601,7 @@ def service(observer, kind, name, request):
 
 
 @contextmanager
-def controller_stack(observer, params_file, folder, *, turnaround=False):
+def controller_stack(observer, params_file, folder, *, turnaround=False, alignment=False):
     """Own only controller, smoother and return planner; leave AMCL running."""
     from ament_index_python.packages import get_package_prefix
     from lifecycle_msgs.srv import ChangeState
@@ -511,6 +611,8 @@ def controller_stack(observer, params_file, folder, *, turnaround=False):
     params = yaml.safe_load(Path(params_file).read_text())
     if turnaround:
         params = experiment.with_turnaround_checker(params)
+    if alignment:
+        params = experiment.with_alignment_checker(params)
     params['planner_server'] = {'ros__parameters': {
         'planner_plugins': ['NavFn'], 'expected_planner_frequency': 1.,
         'NavFn': {'plugin': 'nav2_navfn_planner/NavfnPlanner', 'tolerance': .05,
@@ -588,7 +690,7 @@ def planned_return(observer, current, target):
 
 
 def recorded_child(observer, command, logfile, expected_result, processes, map_data,
-                   *, endpoint_manifest=None):
+                   *, endpoint_manifest=None, positioning_manifest=None):
     """Continuously observe the robot while the existing recorder owns the goal."""
     invalid_since = None
     def guard():
@@ -618,7 +720,11 @@ def recorded_child(observer, command, logfile, expected_result, processes, map_d
         raise RuntimeError(f'Recorder exited {child.returncode} without a readable result; see {logfile}') from exc
     endpoint_miss = (child.returncode == 0 and endpoint_manifest is not None
                      and settled_endpoint_failure(result, endpoint_manifest, expected_result.parent))
-    if child.returncode or (result.get('success') is not True and not endpoint_miss):
+    positioning_miss = (child.returncode == 1 and positioning_manifest is not None
+                        and result.get('purpose') == 'reposition_only_not_an_experiment_trial'
+                        and settled_endpoint_failure(result, positioning_manifest, expected_result.parent))
+    if ((child.returncode and not positioning_miss)
+            or (result.get('success') is not True and not endpoint_miss and not positioning_miss)):
         raise RuntimeError(f'Recorder failed (exit {child.returncode}, status {result.get("status")}): '
                            f'{result.get("error", "Inspect final errors in " + str(expected_result))}; see {logfile}')
     observer.stopped()
@@ -629,7 +735,9 @@ def recorded_child(observer, command, logfile, expected_result, processes, map_d
         raise RuntimeError('Live /map differs from the checked map')
     if endpoint_miss:
         print(f'  Endpoint miss recorded as FAILED; continuing after verified stop: '
-              f'{result["error"]}', flush=True)
+                           f'{result["error"]}', flush=True)
+    if positioning_miss:
+        print('  Positioning endpoint miss retained; checking the stopped pose before correction.', flush=True)
     return result
 
 
@@ -657,14 +765,56 @@ def execute(args, manifest, trials, map_data, output):
     status['resume'] = bool(args.resume)
     status['reference_policy'] = 'per_trial_current_pose' if args.start_from_current else 'session_fixed'
     current_only = 'retry_of' in manifest and args.start_from_current
-    status['start_policy'] = 'current_pose_with_turnaround' if current_only else 'align_then_current_pose'
+    status['start_policy'] = ('current_pose_with_turnaround' if current_only else
+                              'align_then_current_pose' if args.start_from_current else 'align_to_frozen_start')
     experiment.write_json(output / 'schedule.json', trials)
     info, pixels, blocked = map_data
 
     def align_to_start(target, trial, processes, params, kind, record_id, *, reanchor_after_stop=False,
                        heading_only=False):
-        current = observer.stopped()['pose']
         config = yaml.safe_load(params.read_text())
+        fixed = not reanchor_after_stop and not heading_only
+        # One-way E2 repeats have one frozen S->G corridor. Use it for returns
+        # and resume alignments, without changing any scored path or result.
+        return_reference = None
+        if fixed and trial['task'] == 'E2_environment' and not manifest.get('bidirectional'):
+            _, _, return_reference = experiment.load_trial(session, trial['id'])
+
+        def move(current, attempt=1):
+            attempt_id = record_id if attempt == 1 else f'{record_id}_correction_{attempt:02d}'
+            print(f'  {kind} -> {target.tolist()}', flush=True)
+            radius = config['local_costmap']['local_costmap']['ros__parameters']['robot_radius']
+            if heading_only:
+                route = np.array([current, target])
+                assert_clear(route, info, blocked, radius)
+            else:
+                route = checked_return_path(current, target, map_data, radius,
+                    lambda current, target: planned_return(observer, current, target),
+                    output/'return_checks'/(attempt_id+'.json'), reference=return_reference)
+            return_pub.publish(experiment.pose_path_message(route, 'map', observer.get_clock().now().to_msg()))
+            packet = dict(path=route.tolist(), start=current, output=str(output/kind/attempt_id),
+                          endpoint_policy='reanchor_after_stop' if reanchor_after_stop else 'fixed_tolerance')
+            if heading_only:
+                packet['goal_checker_id'] = experiment.TURNAROUND_GOAL_CHECKER
+            elif fixed:
+                packet['goal_checker_id'] = experiment.ALIGNMENT_GOAL_CHECKER
+            packet_file = output/(attempt_id+'_return.json')
+            experiment.write_json(packet_file, packet)
+            status.update(status=kind, motion_requested=True)
+            experiment.write_json(output/'status.json', status)
+            return recorded_child(observer, [sys.executable, str(Path(__file__)), '_transfer',
+                '--session', str(session), '--trial', trial['id'], '--packet', str(packet_file),
+                '--base-frame', args.base_frame, '--odom-topic', args.odom_topic],
+                output/(attempt_id+'_return.log'), Path(packet['output'])/'result.json', processes, (info, pixels),
+                positioning_manifest=manifest if fixed else None)
+
+        if fixed:
+            report = checked_fixed_alignment(target, manifest, observer.stopped, move,
+                                             output/'alignment_checks'/(record_id+'.json'))
+            if report['attempts']:
+                status[kind].append(record_id)
+            return
+        current = observer.stopped()['pose']
         if heading_only:
             target = np.array([*current[:2], target[2]])
             close = abs(experiment.wrap(current[2]-target[2])) <= experiment.TURNAROUND_YAW_TOLERANCE
@@ -672,23 +822,7 @@ def execute(args, manifest, trials, map_data, output):
             close = pose_close(current, target, manifest)
         if close:
             return
-        print(f'  {kind} -> {target.tolist()}', flush=True)
-        route = np.array([current, target]) if heading_only else planned_return(observer, current, target)
-        radius = config['local_costmap']['local_costmap']['ros__parameters']['robot_radius']
-        assert_clear(route, info, blocked, radius)
-        return_pub.publish(experiment.pose_path_message(route, 'map', observer.get_clock().now().to_msg()))
-        packet = dict(path=route.tolist(), start=current, output=str(output/kind/record_id),
-                      endpoint_policy='reanchor_after_stop' if reanchor_after_stop else 'fixed_tolerance')
-        if heading_only:
-            packet['goal_checker_id'] = experiment.TURNAROUND_GOAL_CHECKER
-        packet_file = output/(record_id+'_return.json')
-        experiment.write_json(packet_file, packet)
-        status.update(status=kind, motion_requested=True)
-        experiment.write_json(output/'status.json', status)
-        recorded_child(observer, [sys.executable, str(Path(__file__)), '_transfer',
-            '--session', str(session), '--trial', trial['id'], '--packet', str(packet_file),
-            '--base-frame', args.base_frame, '--odom-topic', args.odom_topic],
-            output/(record_id+'_return.log'), Path(packet['output'])/'result.json', processes, (info, pixels))
+        move(current)
         if not reanchor_after_stop and not pose_close(observer.stopped()['pose'], target, manifest):
             raise RuntimeError('Positioning did not reach the next frozen start')
         status[kind].append(record_id)
@@ -706,7 +840,8 @@ def execute(args, manifest, trials, map_data, output):
         while index < len(trials):
             trial = trials[index]
             params = session / trial['params_file']
-            with controller_stack(observer, params, output / f'stack_{index:03d}', turnaround=current_only) as processes:
+            with controller_stack(observer, params, output / f'stack_{index:03d}', turnaround=current_only,
+                                  alignment=not args.start_from_current) as processes:
                 if args.resume and index == 0 and not args.start_from_current:
                     # The previous batch may have stopped during an unscored
                     # alignment. Preserve its files and record this new transfer.

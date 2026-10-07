@@ -617,18 +617,30 @@ def test_assignment_check_uses_frozen_config(tmp_path):
         experiment.load_trial(root,trial['id'])
 
 
-def test_dwb_omni_dynamic_window_limits_and_goal_checker():
+@pytest.mark.parametrize('frequency', [20., 30.])
+def test_dwb_omni_rollout_limits_and_goal_checker(frequency):
     config=experiment.default_config()
+    config['common']['control_frequency_hz']=frequency
     params=experiment.render_parameters(ROOT/'params/hsrb_dwvp_access_params.yaml', config)
     ctrl=params['controller_server']['ros__parameters']['DWB']
     assert ctrl['wrapped_plugin']=='dwb_core::DWBLocalPlanner'
-    assert ctrl['trajectory_generator_name']=='dwb_plugins::LimitedAccelGenerator'
+    assert ctrl['trajectory_generator_name']=='dwb_plugins::StandardTrajectoryGenerator'
+    assert ctrl['discretize_by_time'] and ctrl['limit_vel_cmd_in_traj']
     assert ctrl['min_vel_y']==-.22 and ctrl['max_vel_y']==.22 and ctrl['vy_samples']>1
     assert ctrl['max_speed_xy']==pytest.approx(np.hypot(.22,.22))
-    assert ctrl['sim_period']==1/30 and ctrl['xy_goal_tolerance']==.1
+    assert ctrl['time_granularity']==1/frequency and 'sim_period' not in ctrl
+    assert ctrl['xy_goal_tolerance']==.1
     for i, axis in enumerate(('x','y','theta')):
         assert ctrl['acc_lim_'+axis]==config['common']['max_accel'][i]
         assert ctrl['decel_lim_'+axis]==config['common']['max_decel'][i]
+
+
+def test_local_costmap_keeps_static_walls_with_sensor_obstacles():
+    params=experiment.render_parameters(ROOT/'params/hsrb_dwvp_access_params.yaml',experiment.default_config())
+    local=params['local_costmap']['local_costmap']['ros__parameters']
+    assert local['plugins']==['static_layer','voxel_layer','inflation_layer']
+    assert local['voxel_layer']['combination_method']==1
+    assert local['static_layer']['map_subscribe_transient_local']
 
 
 @pytest.mark.parametrize('speed,age', [(float('nan'),0.),(.2,1.)])

@@ -33,6 +33,21 @@ CLOCK_FUTURE_TOLERANCE_S = .05
 LEGACY_CLOCK_FUTURE_TOLERANCE_S = .02
 TURNAROUND_GOAL_CHECKER = 'turnaround_goal_checker'
 TURNAROUND_YAW_TOLERANCE = .005
+ALIGNMENT_GOAL_CHECKER = 'alignment_goal_checker'
+
+
+def with_alignment_checker(parameters):
+    """Aim inside the frozen start tolerance during unscored positioning."""
+    parameters = copy.deepcopy(parameters)
+    server = parameters['controller_server']['ros__parameters']
+    if ALIGNMENT_GOAL_CHECKER in server['goal_checker_plugins']:
+        raise ValueError('Alignment checker must not be part of frozen trial parameters')
+    general = server['general_goal_checker']
+    server['goal_checker_plugins'] = [*server['goal_checker_plugins'], ALIGNMENT_GOAL_CHECKER]
+    server[ALIGNMENT_GOAL_CHECKER] = dict(plugin='nav2_controller::SimpleGoalChecker',
+        stateful=False, xy_goal_tolerance=min(.05, general['xy_goal_tolerance']/2),
+        yaw_goal_tolerance=min(.15, general['yaw_goal_tolerance']/2))
+    return parameters
 
 
 def with_turnaround_checker(parameters):
@@ -55,6 +70,9 @@ def transfer_goal_checker(transfer, reference):
                 or reference.shape != (2, 3) or not np.isfinite(reference).all()
                 or np.linalg.norm(reference[1, :2]-reference[0, :2]) > 1e-6):
             raise ValueError('Turnaround checker is only for unscored in-place turns')
+    elif checker == ALIGNMENT_GOAL_CHECKER:
+        if transfer.get('endpoint_policy', 'fixed_tolerance') != 'fixed_tolerance':
+            raise ValueError('Alignment checker requires a fixed target')
     elif checker != 'general_goal_checker':
         raise ValueError('Unknown transfer goal checker')
     return checker
@@ -146,6 +164,12 @@ def render_parameters(params, config, condition=None):
                         xy_goal_tolerance=config['trial']['xy_tolerance_m'])
             for i, axis in enumerate(('x', 'y', 'theta')):
                 ctrl.update({f'acc_lim_{axis}': accel[i], f'decel_lim_{axis}': decel[i]})
+            if ctrl.get('trajectory_generator_name') == 'dwb_plugins::StandardTrajectoryGenerator':
+                # Only LimitedAccelGenerator declares sim_period. The standard
+                # rollout advances acceleration at its configured time steps.
+                ctrl.pop('sim_period', None)
+                if ctrl.get('discretize_by_time') and ctrl.get('limit_vel_cmd_in_traj'):
+                    ctrl['time_granularity'] = 1.0/c['control_frequency_hz']
         if name == 'MPPI':
             ctrl.update(vx_max=hi[0], vx_min=lo[0], vy_max=hi[1], wz_max=hi[2], model_dt=1.0/c['control_frequency_hz'])
     smoother = values['velocity_smoother']['ros__parameters']
@@ -473,8 +497,12 @@ def verify_runtime_parameters(expected_file, runtime_files, controller):
         # Freeze all supplied tuning, including nested critics and checkers.
         # Parameters of controllers not used by this trial do not affect it.
         if node == 'controller_server':
+            runtime_expected = expected
             if TURNAROUND_GOAL_CHECKER in actual.get('goal_checker_plugins', []):
-                wanted = flatten_parameters(with_turnaround_checker(expected)[node]['ros__parameters'])
+                runtime_expected = with_turnaround_checker(runtime_expected)
+            if ALIGNMENT_GOAL_CHECKER in actual.get('goal_checker_plugins', []):
+                runtime_expected = with_alignment_checker(runtime_expected)
+            wanted = flatten_parameters(runtime_expected[node]['ros__parameters'])
             unused = set(wanted['controller_plugins']) - {controller}
             wanted = {k: v for k, v in wanted.items()
                       if not any(k.startswith(other + '.') for other in unused)}
@@ -742,6 +770,10 @@ def run(session, trial_id, base_frame='base_link', odom_topic='/omni_base_contro
 
     event_writers = {k: writer(k + '.csv', ['stamp_s', 'source_stamp_s', 'vx', 'vy', 'omega', 'receive_monotonic_s'])
                      for k in ('raw', 'applied', 'odom')}
+    odom_pose_writer = writer('odom_pose.csv', ['stamp_s', 'source_stamp_s', 'frame', 'child_frame',
+        'x', 'y', 'z', 'qx', 'qy', 'qz', 'qw'])
+    scan_writer = writer('scan_ranges.csv', ['stamp_s', 'source_stamp_s', 'frame', 'angle_min',
+        'angle_increment', 'range_min', 'range_max', 'ranges_json'])
 
     def callback(key, msg):
         received_monotonic = time.monotonic()
@@ -751,6 +783,10 @@ def run(session, trial_id, base_frame='base_link', odom_topic='/omni_base_contro
         if recording and key in ('raw', 'applied'):
             command_first.setdefault(key, latest[key][0])
         event_writers[key].writerow([latest[key][0], source, twist.linear.x, twist.linear.y, twist.angular.z, received_monotonic])
+        if key == 'odom':
+            p, q = msg.pose.pose.position, msg.pose.pose.orientation
+            odom_pose_writer.writerow([latest[key][0], source, msg.header.frame_id, msg.child_frame_id,
+                p.x, p.y, p.z, q.x, q.y, q.z, q.w])
 
     timing_writer = writer('timing.csv', ['receive_stamp_s', 'stamp_s', 'controller', 'sequence', 'compute_time_ms', 'success'])
 
@@ -768,6 +804,10 @@ def run(session, trial_id, base_frame='base_link', odom_topic='/omni_base_contro
 
     def scan_callback(msg):
         latest_scan[:] = [msg, now()]
+        # Preserve bearing-specific evidence; a single minimum cannot diagnose a blind spot.
+        scan_writer.writerow([latest_scan[1], msg.header.stamp.sec + msg.header.stamp.nanosec/1e9,
+            msg.header.frame_id, msg.angle_min, msg.angle_increment, msg.range_min, msg.range_max,
+            json.dumps([float(r) if math.isfinite(r) else None for r in msg.ranges], separators=(',', ':'))])
 
     subscriptions = [node.create_subscription(DiagnosticArray, '/dwvp_access/controller_timing', timing_callback, 1000),
                      node.create_subscription(Twist, '/cmd_vel_nav', lambda m: callback('raw', m), 100),

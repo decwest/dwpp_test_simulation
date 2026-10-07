@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One-terminal mapping and fresh E1 experiments, with timestamped artifacts."""
+"""One-terminal mapping, current-pose E1 and prepared map-fixed E2 experiments."""
 import argparse
 from collections import Counter
 from contextlib import ExitStack
@@ -95,6 +95,113 @@ def copy_map(source, folder):
     return saved
 
 
+def fixed_environment(manifest):
+    return {t['task'] for t in manifest['trials']} == {'E2_environment'}
+
+
+def verify_environment_map(session, saved_map, manifest):
+    """Bind the offline route to the exact saved map used for localization."""
+    metadata = json.loads((session/'environment_path_metadata.json').read_text())
+    info = checked_map(saved_map)
+    if (metadata['csv_sha256'] != manifest['paths']['E2_environment']['sha256']
+            or metadata['map_yaml_sha256'] != experiment.digest(saved_map)
+            or metadata['map_image_sha256'] != experiment.digest(saved_map.parent/info['image'])):
+        raise ValueError('Prepared E2 route/map differs from the offline planner metadata')
+
+
+def prepared_inputs(workspace, requested):
+    """Validate an unrecorded E2 session and its map before starting any nodes."""
+    from dwvp_access_batch import check_geometry, selected_trials
+    session = Path(requested)
+    session = (session if session.is_absolute() else workspace/session).resolve()
+    manifest, trials = selected_trials(session)
+    if not fixed_environment(manifest) or 'retry_of' in manifest:
+        raise ValueError('--prepared-session requires a map-fixed E2 session')
+    saved_map = session.parent/'map/map.yaml'
+    verify_environment_map(session, saved_map, manifest)
+    check_geometry(session, trials, saved_map)
+    return session, saved_map, trials
+
+
+def fixed_retry_inputs(workspace, requested, trial_id):
+    """Select an explicitly requested E2 attempt, including an interrupted one."""
+    from dwvp_access_batch import check_geometry
+    session = Path(requested)
+    session = (session if session.is_absolute() else workspace/session).resolve()
+    manifest, trial, _ = experiment.load_trial(session, trial_id)
+    if not fixed_environment(manifest) or manifest.get('bidirectional'):
+        raise ValueError('Fixed E2 reacquisition requires a one-way E2-only session')
+    folder = session/'runs'/trial_id
+    result = json.loads((folder/'result.json').read_text())
+    recorded = json.loads((folder/'trial.json').read_text())
+    if (recorded.get('trial') != trial
+            or recorded.get('manifest_sha256') != experiment.digest(session/'manifest.json')
+            or recorded.get('params_sha256') != trial['params_sha256']):
+        raise ValueError('Source attempt differs from its frozen E2 inputs')
+    if result.get('status') not in ('succeeded', 'failed', 'interrupted', 'setup_failed'):
+        raise ValueError('Source E2 attempt has no terminal result')
+    saved_map = session.parent/'map/map.yaml'
+    verify_environment_map(session, saved_map, manifest)
+    check_geometry(session, [trial], saved_map)
+    return session, saved_map, [trial]
+
+
+def prepare_fixed_retry(source, output, trial_id, *, template=None):
+    """New fixed-path attempt with current HSR settings and explicit provenance.
+
+    The old attempt is never edited or treated as a successful resume prefix.
+    Changed settings remain distinguishable when analyzing experimental data.
+    """
+    source, output = Path(source), Path(output)
+    manifest, trial, _ = experiment.load_trial(source, trial_id)
+    config = yaml.safe_load((source/'experiment_config.yaml').read_text())
+    config['conditions']['E2_environment'].update(methods=[trial['controller']],
+        start_pose=experiment.start_pose(manifest, trial).tolist())
+    output.parent.mkdir(parents=True, exist_ok=True)
+    settings = output.parent/'retry_config.yaml'
+    if settings.exists():
+        raise FileExistsError(settings)
+    settings.write_text(yaml.safe_dump(config, sort_keys=False))
+    if template is None:
+        template = Path(__file__).resolve().parents[1]/'params/hsrb_dwvp_access_params.yaml'
+        if not template.is_file():
+            from ament_index_python.packages import get_package_share_directory
+            template = Path(get_package_share_directory('dwpp_test_simulation'))/'params/hsrb_dwvp_access_params.yaml'
+    new = experiment.prepare(output, template, origin=manifest['map_origin'],
+        environment_path=source/manifest['paths']['E2_environment']['file'],
+        seed=manifest['seed'], config_file=settings, conditions=['E2_environment'], repeats=[trial['repeat']])
+    if new['paths']['E2_environment']['sha256'] != manifest['paths']['E2_environment']['sha256']:
+        raise ValueError('Fixed retry changed the source reference CSV')
+    shutil.copy2(source/'environment_path_metadata.json', output/'environment_path_metadata.json')
+    for name, path in [('source_manifest.json', source/'manifest.json'),
+                       ('source_result.json', source/'runs'/trial_id/'result.json'),
+                       ('source_params.yaml', source/trial['params_file'])]:
+        shutil.copy2(path, output.parent/name)
+    before = yaml.safe_load((source/trial['params_file']).read_text())
+    after = yaml.safe_load((output/new['trials'][0]['params_file']).read_text())
+    experiment.write_json(output.parent/'reacquisition.json', dict(source_session=str(source),
+        trial_id=trial_id, source_manifest_sha256=experiment.digest(source/'manifest.json'),
+        source_result_sha256=experiment.digest(source/'runs'/trial_id/'result.json'),
+        old_params_sha256=trial['params_sha256'], new_params_sha256=new['trials'][0]['params_sha256'],
+        changed_parameter_sections=[k for k in sorted(set(before)|set(after)) if before.get(k)!=after.get(k)],
+        reference_policy='same_frozen_map_path', source_attempt_preserved=True,
+        settings_policy='current HSR template; do not silently pool changed settings with source data'))
+    return new
+
+
+def copy_fixed_map(source, folder):
+    """Preserve the exact YAML bytes covered by E2 planner metadata."""
+    info = checked_map(source)
+    image = Path(info['image'])
+    if image.is_absolute() or '..' in image.parts:
+        raise ValueError('Fixed E2 map image must be packaged beside its YAML')
+    folder.mkdir(parents=True, exist_ok=False)
+    (folder/image).parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source.parent/image, folder/image)
+    shutil.copy2(source, folder/'map.yaml')
+    return folder/'map.yaml'
+
+
 def resume_inputs(workspace, requested):
     """Read and validate a one-terminal run without changing any recorded files."""
     from dwvp_access_batch import selected_trials
@@ -103,12 +210,18 @@ def resume_inputs(workspace, requested):
     session = Path(requested)
     session = (session if session.is_absolute() else workspace/session).resolve()
     manifest, pending = selected_trials(session, resume=True, continue_on_endpoint_failure=True)
-    if not manifest.get('bidirectional') or any(t['task'] == 'E2_environment' for t in manifest['trials']):
-        raise ValueError('One-terminal resume requires a bidirectional E1 session')
+    is_e2 = fixed_environment(manifest)
+    if not is_e2 and (not manifest.get('bidirectional') or any(t['task'] == 'E2_environment' for t in manifest['trials'])):
+        raise ValueError('One-terminal resume requires a bidirectional E1 or map-fixed E2-only session')
     saved_map = session.parent/'map/map.yaml'
     info = checked_map(saved_map)
     map_records = list((session/'batches').glob('*/map_input.json'))
-    if not map_records:
+    if is_e2:
+        from dwvp_access_batch import check_geometry
+        verify_environment_map(session, saved_map, manifest)
+        if pending:
+            check_geometry(session, pending, saved_map)
+    if not map_records and not is_e2:
         raise ValueError('Cannot verify the previous batch map; use the explicit batch workflow')
     for path in map_records:
         recorded = json.loads(path.read_text())
@@ -380,14 +493,20 @@ def is_retry(args):
 
 def run_experiment(args, folder, source):
     resuming = getattr(args, 'resume', None) is not None
+    prepared = getattr(args, 'prepared_session', None) is not None
     retrying = is_retry(args)
-    session = args.resume_session if resuming else folder/'session'
+    session = args.resume_session if resuming else args.prepared_session if prepared else folder/'session'
+    is_e2 = (resuming or prepared) and fixed_environment(json.loads((session/'manifest.json').read_text()))
     if retrying:
-        from dwvp_access_batch import prepare_retry
-        retry = prepare_retry(args.retry_source, session, trial_id=getattr(args, 'retry_trial', None))
+        is_e2 = bool(getattr(args, 'fixed_retry', False))
+        if is_e2:
+            retry = prepare_fixed_retry(args.retry_source, session, args.retry_trial)
+        else:
+            from dwvp_access_batch import prepare_retry
+            retry = prepare_retry(args.retry_source, session, trial_id=getattr(args, 'retry_trial', None))
         args.params = session/retry['trials'][0]['params_file']
-    current_pose_retry = retrying or (resuming and 'retry_of' in json.loads((session/'manifest.json').read_text()))
-    saved_map = source if resuming else copy_map(source, folder/'map')
+    current_pose_retry = (retrying and not is_e2) or (resuming and 'retry_of' in json.loads((session/'manifest.json').read_text()))
+    saved_map = source if resuming or prepared else (copy_fixed_map if is_e2 else copy_map)(source, folder/'map')
     experiment.write_json(folder/'map_input.json', dict(source=str(source), map=str(saved_map),
         yaml_sha256=experiment.digest(source), image_sha256=experiment.digest(source.parent/checked_map(source)['image'])))
     localize = ['ros2', 'launch', 'dwpp_test_simulation', 'dwvp_access_hsr.launch.py',
@@ -395,23 +514,40 @@ def run_experiment(args, folder, source):
         'use_sim_time:=false', 'shutdown_on_exit:=true', f'use_rviz:={str(not args.no_rviz).lower()}']
     with ExitStack() as owned:
         localization = owned.enter_context(Process(localize, folder/'localization.log'))
+        preview = None
+        if is_e2:
+            from dwvp_access_batch import selected_trials
+            manifest, pending = selected_trials(session, resume=True, continue_on_endpoint_failure=True)
+            next_trial = pending[0]
+            preview = owned.enter_context(Process(
+                ['ros2', 'run', 'dwpp_test_simulation', 'dwvp_access_experiment.py', 'preview',
+                 '--session', str(session), '--trial', next_trial['id']], folder/'preview.log'))
         joy = None if args.no_joy else owned.enter_context(Process(joy_command(), folder/'joy.log'))
-        background = [p for p in (localization, joy) if p is not None]
+        background = [p for p in (localization, preview, joy) if p is not None]
         label = '再試行' if retrying else ('再開' if resuming else '新規実験')
         print(f'地図: {source}\n{label}: {session}\n起動ログ: {folder}/localization.log', flush=True)
+        if is_e2:
+            start = experiment.start_pose(manifest, next_trial)
+            pattern = '固定経路の往復試行' if manifest.get('bidirectional') else '同じS→G経路の試行（各試行後にSへ帰還、帰還は計測外）'
+            print(f'E2 は地図上に固定した経路です。残り {len(pending)} 試行、次は {next_trial["id"]} ({next_trial.get("direction", "forward")})。\n'
+                  f'開始姿勢: x={start[0]:.3f} m, y={start[1]:.3f} m, yaw={start[2]:.3f} rad。\n'
+                  'RViz に経路と開始姿勢を表示します。F310 で開始位置付近へ移動してください。\n'
+                  f'Enter 後に開始姿勢へ位置合わせして、{pattern}を開始します。', flush=True)
         if current_pose_retry:
             print('再試行は現在位置基準です。2件目以降は直前の経路を戻る方向へその場で向き直り、停止後に経路を作ります。\n'
                   '再開の最初の1件は、前回の停止位置から0.5 m以内なら折返し、離れていれば現在の位置・向きから始めます。\n'
                   'F310で経路が収まる位置・向きに合わせ、LBを離してください。', flush=True)
         wait_enter('RViz の 2D Pose Estimate で初期位置を設定し、レーザと地図を合わせてください。\n'
-                   'LB を離して停止してください。Enter で選択した試行を開始します。' if resuming or retrying else
+                   'LB を離して停止してください。Enter で選択した試行を開始します。' if resuming or retrying or prepared else
                    'RViz の 2D Pose Estimate で初期位置を設定し、レーザと地図を合わせてください。\n'
                    'F310 で開始場所へ移動し、LB を離して停止してください。Enter で新規の往復実験を開始します。', background)
         if joy:
             joy.stop()
+        if preview:
+            preview.stop()
         capture = stopped_pose()
         check_background([localization])
-        if not resuming and not retrying:
+        if not resuming and not retrying and not prepared:
             prepare = ['ros2', 'run', 'dwpp_test_simulation', 'dwvp_access_experiment.py', 'prepare',
                        '--output', str(session), '--params', str(args.params),
                        '--start-from-current', '--bidirectional', '--conditions', *args.conditions]
@@ -424,9 +560,13 @@ def run_experiment(args, folder, source):
         atomic_json(args.workspace/'results/dwvp_access/latest.json',
                     dict(session=str(session.relative_to(args.workspace)), map=str(saved_map.relative_to(args.workspace))))
         batch = ['ros2', 'run', 'dwpp_test_simulation', 'dwvp_access_batch.py',
-                 '--session', str(session), '--map', str(saved_map), '--start-from-current',
+                 '--session', str(session), '--map', str(saved_map),
                  '--continue-on-endpoint-failure']
-        if resuming:
+        if not is_e2:
+            batch += ['--start-from-current']
+        if resuming or prepared or is_e2:
+            # --resume also aligns an entirely unrecorded fixed-path session to
+            # its first start, without changing its reference or trial order.
             batch += ['--resume']
         run_child(batch+['--dry-run'], folder/'plan.log', [localization], timeout=60)
         run_child(batch, folder/'batch.log', [localization])
@@ -445,14 +585,16 @@ def main():
     sub = parser.add_subparsers(dest='command', required=True)
     p = sub.add_parser('mapping', help='SLAM/RViz/F310; Enter saves and closes everything')
     p.add_argument('--name', help='Optional environment name; existing names are never overwritten')
-    e = sub.add_parser('experiment', help='Latest saved map, localization and a fresh bidirectional E1 batch')
+    e = sub.add_parser('experiment', help='Localize and run fresh E1 or prepared map-fixed E2 trials')
     previous = e.add_mutually_exclusive_group()
+    previous.add_argument('--prepared-session', type=Path,
+                   help='Start a prepared map-fixed E2 session; uses its adjacent map/map.yaml and frozen route')
     previous.add_argument('--resume', nargs='?', const='latest', type=Path,
                    help='Resume the latest or specified session; preserve all recorded successes and stopped endpoint misses')
     previous.add_argument('--retry-failed', nargs='?', const='latest', type=Path,
                    help='Repeat failed conditions from each current pose in a separate attempt, without returning to old starts')
     previous.add_argument('--retry-trial', metavar='TRIAL_ID',
-                   help='Reacquire exactly one completed trial, including a success; requires --source-session')
+                   help='Reacquire one trial; E2 also accepts interrupted attempts and uses current HSR settings on the frozen path')
     e.add_argument('--source-session', type=Path,
                    help='Original session for --retry-trial; its results and frozen conditions are preserved')
     e.add_argument('--map', type=Path, help='Override maps/latest.json; relative to the workspace')
@@ -476,19 +618,41 @@ def main():
     if args.command == 'experiment':
         if (args.retry_trial is not None) != (args.source_session is not None):
             parser.error('--retry-trial and --source-session must be supplied together')
-        if args.resume is not None or is_retry(args):
+        if args.prepared_session is not None:
+            if any(getattr(args, name) is not None for name in ('map', 'params', 'config', 'conditions', 'repeats')):
+                raise ValueError('--prepared-session uses the saved map and frozen conditions; do not supply input overrides')
+            selected, source, pending = prepared_inputs(args.workspace, args.prepared_session)
+            args.prepared_session = selected
+            args.params = selected/pending[0]['params_file']
+            manifest = json.loads((selected/'manifest.json').read_text())
+            pattern = ('alternating forward/reverse' if manifest.get('bidirectional') else
+                       'all trials S -> G; unscored return to S after each trial, including the last')
+            print(f'Prepared E2: {selected}\nTrials: {len(pending)}; fixed map path; {pattern}.')
+        elif args.resume is not None or is_retry(args):
             if any(getattr(args, name) is not None for name in ('map', 'params', 'config', 'conditions', 'repeats')):
                 raise ValueError('--resume / --retry-failed / --retry-trial use the saved map and frozen conditions; do not supply input overrides')
-            selected, source, pending = resume_inputs(args.workspace, args.resume or args.retry_failed or args.source_session)
+            args.fixed_retry = False
+            if args.retry_trial is not None:
+                candidate = args.source_session
+                candidate = (candidate if candidate.is_absolute() else args.workspace/candidate).resolve()
+                args.fixed_retry = fixed_environment(json.loads((candidate/'manifest.json').read_text()))
+            selected, source, pending = (fixed_retry_inputs(args.workspace, args.source_session, args.retry_trial)
+                if args.fixed_retry else resume_inputs(args.workspace, args.resume or args.retry_failed or args.source_session))
             if is_retry(args):
-                from dwvp_access_batch import failed_trials, explicit_retry_trial
-                _, pending = (explicit_retry_trial(selected, args.retry_trial) if args.retry_trial is not None
-                              else failed_trials(selected))
+                if not args.fixed_retry and fixed_environment(json.loads((selected/'manifest.json').read_text())):
+                    raise ValueError('Current-pose retries are E1-only; E2 reacquisition must retain the fixed map path')
+                if not args.fixed_retry:
+                    from dwvp_access_batch import failed_trials, explicit_retry_trial
+                    _, pending = (explicit_retry_trial(selected, args.retry_trial) if args.retry_trial is not None
+                                  else failed_trials(selected))
                 args.retry_source = selected
                 label = 'Explicit trials to retry' if args.retry_trial is not None else 'Failed trials to retry'
                 print(f'Retry source: {selected}\n{label}: {len(pending)}; original results are preserved.')
                 for trial in pending:
-                    print(f"  {trial['id']} (source direction: {trial['direction']}; retry uses current pose)")
+                    if args.fixed_retry:
+                        print(f"  {trial['id']} (same frozen S -> G; new HSR settings recorded separately)")
+                    else:
+                        print(f"  {trial['id']} (source direction: {trial['direction']}; retry uses current pose)")
             else:
                 args.resume_session = selected
                 print(f'Resume: {selected}\nRemaining trials: {len(pending)}; existing attempts are preserved.')
@@ -507,14 +671,19 @@ def main():
                 if not value.is_file():
                     raise FileNotFoundError(value)
                 setattr(args, name, value.resolve())
-        if args.resume is None and not is_retry(args):
+        if args.resume is None and not is_retry(args) and args.prepared_session is None:
             source = choose_map(args.workspace, args.map)
     if args.dry_run:
-        if is_retry(args):
+        if getattr(args, 'prepared_session', None) is not None:
+            print(f'Map: {source}\nNext trial: {pending[0]["id"]} ({pending[0].get("direction", "forward")})\n'
+                  'Fixed E2 route checked against map; align to the first start after Enter; no current-pose reanchoring.')
+        elif is_retry(args):
             print(f'Map: {source}\nNew attempt: {args.retry_source.parent}/retries/retry_<JST timestamp>/session')
-            print('Conditions preserved; current-pose retries turn back along the preceding actual path between trials.')
+            print('Same frozen map path; current HSR parameters; return to S after the trial; source data preserved.'
+                  if getattr(args, 'fixed_retry', False) else
+                  'Conditions preserved; current-pose retries turn back along the preceding actual path between trials.')
         elif getattr(args, 'resume', None) is not None:
-            print(f'Map: {source}\nNext trial: {pending[0]["id"]} ({pending[0]["direction"]})')
+            print(f'Map: {source}\nNext trial: {pending[0]["id"]} ({pending[0].get("direction", "forward")})')
             if 'retry_of' in json.loads((args.resume_session/'manifest.json').read_text()):
                 print('Retry start policy: turn back between trials. On resume, the first pending leg uses the '
                       'current heading if repositioned more than 0.5 m from the previous stopped position.')
@@ -536,15 +705,19 @@ def main():
             raise RuntimeError('Another mapping/experiment workflow owns this workspace')
         handoff = require_idle(args)
         resuming = getattr(args, 'resume', None) is not None
+        prepared = getattr(args, 'prepared_session', None) is not None
         retrying = is_retry(args)
         parent = (args.retry_source.parent/'retries' if retrying else
                   args.resume_session.parent/'resumes' if resuming else
+                  args.prepared_session.parent/'executions' if prepared else
                   args.workspace/('maps' if source is None else f'results/dwvp_access/{source.parent.name}'))
-        prefix = 'retry' if retrying else ('resume' if resuming else ('lab' if source is None else 'run'))
+        prefix = 'retry' if retrying else ('resume' if resuming else ('start' if prepared else ('lab' if source is None else 'run')))
         folder = new_directory(parent, prefix, getattr(args, 'name', None))
         state = dict(command=args.command, status='starting', folder=str(folder), robot_teleop_handoff=handoff)
         if resuming:
             state['resume_session'] = str(args.resume_session)
+        if prepared:
+            state['prepared_session'] = str(args.prepared_session)
         if retrying:
             state['retry_source'] = str(args.retry_source)
             if args.retry_trial is not None:

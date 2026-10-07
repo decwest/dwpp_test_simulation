@@ -230,6 +230,152 @@ def test_resume_dry_run_and_input_rejection_do_not_touch_ros(monkeypatch, tmp_pa
         workflow.main()
 
 
+def prepare_environment(workspace, bidirectional=True):
+    parent = workspace/'results/dwvp_access/lab_e2/run_e2'
+    saved_map = make_map(parent/'map')
+    Image.fromarray(np.full((80, 100), 254, dtype=np.uint8)).save(saved_map.with_suffix('.pgm'))
+    route = parent/'route'; route.mkdir()
+    csv = route/'E2_environment.csv'
+    np.savetxt(csv, [[1., 1., 0.], [2., 1., 0.]], delimiter=',', header='x,y,yaw', comments='')
+    workflow.atomic_json(route/'path_metadata.json', dict(start=[1.,1.,0.],
+        csv_sha256=workflow.experiment.digest(csv), map_yaml_sha256=workflow.experiment.digest(saved_map),
+        map_image_sha256=workflow.experiment.digest(saved_map.with_suffix('.pgm'))))
+    session = parent/'session'
+    manifest = workflow.experiment.prepare(session, ROOT/'params/hsrb_dwvp_access_params.yaml',
+        origin=[0,0,0], environment_path=csv, bidirectional=bidirectional, conditions=['E2_environment'])
+    return session, saved_map, manifest
+
+
+@pytest.mark.parametrize('bidirectional', [False, True])
+def test_prepared_e2_dry_run_checks_frozen_route_and_map_without_ros(monkeypatch, tmp_path, capsys, bidirectional):
+    session, saved_map, manifest = prepare_environment(tmp_path, bidirectional)
+    def forbidden(*args): raise AssertionError('Must not start ROS, SSH or processes')
+    monkeypatch.setattr(workflow, 'require_idle', forbidden)
+    before = {str(p): p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
+    base = ['workflow', '--workspace', str(tmp_path), 'experiment', '--prepared-session', str(session)]
+    monkeypatch.setattr(sys, 'argv', base+['--dry-run'])
+    workflow.main()
+    output = capsys.readouterr().out
+    assert 'Trials: 25' in output and 'Fixed E2 route checked' in output
+    assert {str(p): p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()} == before
+    monkeypatch.setattr(sys, 'argv', base+['--map', str(saved_map), '--dry-run'])
+    with pytest.raises(ValueError, match='frozen conditions'):
+        workflow.main()
+    # A changed map must fail even when the route would still fit in free space.
+    saved_map.with_suffix('.pgm').write_bytes(saved_map.with_suffix('.pgm').read_bytes()+b'changed')
+    monkeypatch.setattr(sys, 'argv', base+['--dry-run'])
+    with pytest.raises(ValueError, match='planner metadata'):
+        workflow.main()
+
+
+@pytest.mark.parametrize('resuming', [False, True])
+@pytest.mark.parametrize('bidirectional', [False, True])
+def test_e2_workflow_previews_fixed_route_and_never_reanchors(monkeypatch, tmp_path, resuming, bidirectional):
+    from test_access_batch import write_success
+    fake_operator(monkeypatch)
+    session, saved_map, manifest = prepare_environment(tmp_path, bidirectional)
+    if resuming:
+        write_success(session, manifest['trials'][0])
+        _, _, pending = workflow.resume_inputs(tmp_path, session)
+        assert pending == manifest['trials'][1:]
+        with pytest.raises(FileExistsError):
+            workflow.prepared_inputs(tmp_path, session)
+    else:
+        _, _, pending = workflow.prepared_inputs(tmp_path, session)
+        assert len(pending) == 25
+    before = {str(p): p.read_bytes() for p in session.rglob('*') if p.is_file()}
+    args = NS(workspace=tmp_path, no_rviz=False, no_joy=False,
+              prepared_session=None if resuming else session, resume=session if resuming else None,
+              resume_session=session, params=session/pending[0]['params_file'])
+    folder = workflow.new_directory(session.parent/'executions', 'start')
+    calls = []
+    def child(command, logfile, background, timeout=None):
+        assert '--start-from-current' not in command and 'prepare' not in command
+        assert '--resume' in command  # Includes the initial fixed-start alignment.
+        assert FakeProcess.instances[1].stopped and FakeProcess.instances[2].stopped
+        assert not FakeProcess.instances[0].stopped
+        calls.append(command)
+    monkeypatch.setattr(workflow, 'run_child', child)
+    workflow.run_experiment(args, folder, saved_map)
+    assert len(calls) == 2 and '--dry-run' in calls[0]
+    assert 'preview' in FakeProcess.instances[1].command
+    assert pending[0]['id'] in FakeProcess.instances[1].command
+    for path, data in before.items(): assert Path(path).read_bytes() == data
+    assert all(p.stopped for p in FakeProcess.instances)
+
+
+def test_e2_current_pose_retry_rejected_before_any_side_effect(monkeypatch, tmp_path):
+    session, _, _ = prepare_environment(tmp_path)
+    def forbidden(*args): raise AssertionError('Must not touch robot or create retry files')
+    monkeypatch.setattr(workflow, 'require_idle', forbidden)
+    monkeypatch.setattr(sys, 'argv', ['workflow', '--workspace', str(tmp_path),
+        'experiment', '--retry-failed', str(session), '--dry-run'])
+    with pytest.raises(ValueError, match='E1-only'):
+        workflow.main()
+    assert not (session.parent/'retries').exists()
+
+
+def interrupted_environment(workspace):
+    from test_access_batch import write_success
+    session, saved_map, manifest = prepare_environment(workspace, bidirectional=False)
+    trial = next(t for t in manifest['trials'] if t['controller']=='DWB')
+    write_success(session, trial)
+    result=session/'runs'/trial['id']/'result.json'
+    result.write_text(json.dumps(dict(status='interrupted',success=False,cancellation_confirmed=True)))
+    return session,saved_map,trial
+
+
+def test_interrupted_fixed_retry_dry_run_preserves_all_originals(monkeypatch,tmp_path,capsys):
+    session,_,trial=interrupted_environment(tmp_path)
+    before={str(p):p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
+    def forbidden(*args):
+        raise AssertionError('Dry run must not start ROS or stop robot teleop')
+    monkeypatch.setattr(workflow,'require_idle',forbidden)
+    monkeypatch.setattr(sys,'argv',['workflow','--workspace',str(tmp_path),'experiment',
+        '--retry-trial',trial['id'],'--source-session',str(session),'--dry-run'])
+    workflow.main()
+    assert 'same frozen S -> G' in capsys.readouterr().out
+    assert {str(p):p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}==before
+
+
+def test_fixed_retry_owns_a_new_single_trial_and_keeps_map_binding(monkeypatch,tmp_path):
+    fake_operator(monkeypatch)
+    session,saved_map,trial=interrupted_environment(tmp_path)
+    workflow.fixed_retry_inputs(tmp_path,session,trial['id'])
+    before={str(p):p.read_bytes() for p in session.rglob('*') if p.is_file()}
+    folder=workflow.new_directory(session.parent/'retries','retry')
+    args=NS(workspace=tmp_path,no_rviz=False,no_joy=False,retry_trial=trial['id'],
+            retry_source=session,fixed_retry=True,params=session/trial['params_file'])
+    calls=[]
+    def child(command,logfile,background,timeout=None):
+        assert '--start-from-current' not in command and '--resume' in command
+        assert FakeProcess.instances[1].stopped and FakeProcess.instances[2].stopped
+        calls.append(command)
+    monkeypatch.setattr(workflow,'run_child',child)
+    workflow.run_experiment(args,folder,saved_map)
+    new=folder/'session'
+    manifest=json.loads((new/'manifest.json').read_text())
+    assert len(manifest['trials'])==1 and manifest['trials'][0]['id']==trial['id']
+    assert not manifest.get('bidirectional') and 'retry_of' not in manifest
+    assert (new/'paths/E2_environment.csv').read_bytes()==(session/'paths/E2_environment.csv').read_bytes()
+    assert (folder/'map/map.yaml').read_bytes()==saved_map.read_bytes()
+    assert len(workflow.prepared_inputs(tmp_path,new)[2])==1
+    assert len(workflow.resume_inputs(tmp_path,new)[2])==1
+    assert len(calls)==2 and '--dry-run' in calls[0]
+    assert json.loads((folder/'reacquisition.json').read_text())['source_attempt_preserved']
+    for name,data in before.items():
+        assert Path(name).read_bytes()==data
+
+
+def test_fixed_retry_rejects_modified_source_record(tmp_path):
+    session,_,trial=interrupted_environment(tmp_path)
+    file=session/'runs'/trial['id']/'trial.json'
+    content=json.loads(file.read_text());content['manifest_sha256']='wrong'
+    file.write_text(json.dumps(content))
+    with pytest.raises(ValueError,match='frozen E2 inputs'):
+        workflow.fixed_retry_inputs(tmp_path,session,trial['id'])
+
+
 def test_early_background_exit_never_runs_next_child(tmp_path):
     marker = tmp_path/'must_not_run'
     with workflow.Process([sys.executable, '-c', 'raise SystemExit(7)'], tmp_path/'failed.log') as background:
