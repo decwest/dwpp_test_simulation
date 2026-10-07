@@ -32,6 +32,7 @@ def noise_metrics(poses):
 
 def record_noise(output, duration=30., frequency=30., frame='map', base_frame='base_link',
                  odom_topic='/omni_base_controller/wheel_odom', max_age=.2):
+    from dwvp_access_experiment import CLOCK_FUTURE_TOLERANCE_S, source_age_is_fresh
     import rclpy
     from nav_msgs.msg import Odometry
     from rclpy.node import Node
@@ -64,7 +65,6 @@ def record_noise(output, duration=30., frequency=30., frame='map', base_frame='b
                 if mono < tick:
                     continue
                 tick = mono+1/frequency
-                now = node.get_clock().now().nanoseconds/1e9
                 pose = [math.nan]*3
                 tf_stamp = math.nan
                 tf_age = odom_age = source_age = math.inf
@@ -75,16 +75,18 @@ def record_noise(output, duration=30., frequency=30., frame='map', base_frame='b
                     pose = [tf.transform.translation.x, tf.transform.translation.y,
                             math.atan2(2*(q.w*q.z+q.x*q.y), 1-2*(q.y*q.y+q.z*q.z))]
                     tf_stamp = tf.header.stamp.sec+tf.header.stamp.nanosec/1e9
-                    tf_age = now-tf_stamp
                 except Exception:
                     pass
+                now = node.get_clock().now().nanoseconds/1e9
+                tf_age = now-tf_stamp
                 if latest:
                     odom, received = latest
                     odom_age = mono-received
                     source_age = now-(odom.header.stamp.sec+odom.header.stamp.nanosec/1e9)
                     v = odom.twist.twist
                     speed, yaw_rate = math.hypot(v.linear.x, v.linear.y), abs(v.angular.z)
-                fresh = (np.isfinite(pose).all() and all(0 <= age <= max_age for age in (tf_age,odom_age,source_age))
+                fresh = (np.isfinite(pose).all() and 0 <= odom_age <= max_age
+                         and source_age_is_fresh(tf_age, max_age) and source_age_is_fresh(source_age, max_age)
                          and math.isfinite(speed) and math.isfinite(yaw_rate))
                 stationary = fresh and speed <= .005 and yaw_rate <= .01
                 moving += int(fresh and not stationary)
@@ -102,6 +104,7 @@ def record_noise(output, duration=30., frequency=30., frame='map', base_frame='b
         rclpy.try_shutdown()
     result = noise_metrics(samples)
     result.update(duration_s=time.monotonic()-started, requested_duration_s=duration, frame=frame,
+                  maximum_future_source_skew_s=CLOCK_FUTURE_TOLERANCE_S,
                   base_frame=base_frame, rejected_samples=rejected, duplicate_tf_samples=duplicate,
                   moving_samples=moving, stationary_verified=bool(len(samples)>1 and moving==0),
                   stationary_speed_limit_m_s=.005, stationary_yaw_rate_limit_rad_s=.01,

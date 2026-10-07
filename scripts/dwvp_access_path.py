@@ -76,6 +76,14 @@ def load_map(file):
     return info,pixels,np.flipud(blocked)
 
 
+class PathBlockedError(ValueError):
+    def __init__(self, details):
+        self.details = details
+        x, y = details['path_point_map']
+        super().__init__(f'Path footprint intersects occupied/unknown/outside map at '
+                         f'({x:.3f}, {y:.3f}) m; check alignment and path endpoints')
+
+
 def assert_clear(path, info, blocked, radius):
     resolution = float(info['resolution'])
     if resolution <= 0 or radius < 0:
@@ -89,7 +97,7 @@ def assert_clear(path, info, blocked, radius):
     local=(np.asarray(dense)-[ox,oy])@np.array([[c,-s],[s,c]])
     reach=int(math.ceil(radius/resolution))+1
     height,width=blocked.shape
-    for point in local:
+    for point, point_map in zip(local, dense):
         mx,my=np.floor(point/resolution).astype(int)
         for gy in range(my-reach,my+reach+1):
             for gx in range(mx-reach,mx+reach+1):
@@ -97,7 +105,11 @@ def assert_clear(path, info, blocked, radius):
                 # Exact distance from centre position to the cell rectangle.
                 distance=np.linalg.norm(np.maximum(np.abs(point-centre)-resolution/2,0))
                 if distance<=radius and (gx<0 or gy<0 or gx>=width or gy>=height or blocked[gy,gx]):
-                    raise ValueError('Smoothed path footprint intersects occupied/unknown/outside map; revise smoothing or endpoints')
+                    cell_map = centre@np.array([[c,s],[-s,c]])+[ox,oy]
+                    raise PathBlockedError(dict(path_point_map=point_map.tolist(),
+                        cell_map=cell_map.tolist(), cell_index=[int(gx),int(gy)],
+                        outside_map=bool(gx<0 or gy<0 or gx>=width or gy>=height),
+                        robot_radius_m=float(radius), distance_to_cell_m=float(distance)))
 
 
 def plot_path(file, path, raw, info, pixels):

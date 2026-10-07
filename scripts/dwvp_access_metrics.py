@@ -287,7 +287,8 @@ def summarize_session(session, tracking_errors):
     session = Path(session)
     manifest = json.loads((session/'manifest.json').read_text())
     config = yaml.safe_load((session/manifest['config_file']).read_text())
-    from dwvp_access_experiment import condition_common
+    from dwvp_access_experiment import (CLOCK_FUTURE_TOLERANCE_S, LEGACY_CLOCK_FUTURE_TOLERANCE_S,
+                                       condition_common, recorded_geometry, source_age_is_fresh)
     settings = config['metrics']
     max_age = settings['maximum_source_age_s']
     rows, diagnostics, timings = [], {}, {}
@@ -302,13 +303,20 @@ def summarize_session(session, tracking_errors):
             result.update(json.loads((folder/'result.json').read_text()))
         except (OSError, ValueError) as exc:
             errors.append('result.json: '+str(exc))
+        # A new live clock allowance must not reinterpret past observations.
+        future_tolerance = result.get('maximum_future_source_skew_s', LEGACY_CLOCK_FUTURE_TOLERANCE_S)
+        if (isinstance(future_tolerance, bool) or not isinstance(future_tolerance, (int, float))
+                or not math.isfinite(future_tolerance) or future_tolerance < 0):
+            errors.append('Invalid recorded maximum_future_source_skew_s; using zero future allowance')
+            future_tolerance = 0.
         data, issue = read_events(folder/'tracking.csv', ('t','stamp_s','x','y','yaw','tf_age_s','raw_age_s','applied_age_s','odom_age_s','odom_source_age_s'))
         if issue:
             errors.append('tracking.csv: '+issue)
         valid = np.isfinite(np.c_[data['x'],data['y'],data['yaw']]).all(axis=1)
         fresh = valid.copy()
-        for key in ('tf_age_s','odom_age_s','odom_source_age_s'):
-            fresh &= (data[key]>=0) & (data[key]<=max_age)
+        for key in ('tf_age_s','odom_source_age_s'):
+            fresh &= source_age_is_fresh(data[key], max_age, future_tolerance=future_tolerance)
+        fresh &= (data['odom_age_s']>=0) & (data['odom_age_s']<=max_age)
         commands_fresh = np.ones(len(data), dtype=bool)
         for key in ('raw_age_s','applied_age_s'):
             commands_fresh &= (data[key]>=0) & (data[key]<=max_age)
@@ -319,6 +327,9 @@ def summarize_session(session, tracking_errors):
             ready = np.flatnonzero(commands_fresh)
             missing_prefix = float(data['t'][ready[0]]) if len(ready) else result.get('duration_s')
         row = dict(trial_id=trial['id'], task=trial['task'], controller=trial['controller'], repeat=trial['repeat'],
+                   maximum_future_source_skew_s=future_tolerance,
+                   direction=trial.get('direction', 'forward'),
+                   reference_policy=result.get('reference_policy', 'session_fixed'),
                    status=result['status'], success=bool(result.get('success',False)), duration_s=result.get('duration_s'),
                    samples=len(data), valid_pose_samples=int(valid.sum()), fresh_pose_samples=int(fresh.sum()),
                    stale_or_missing_samples=int((~quality).sum()), invalid_after_warmup_samples=int((~(quality|grace)).sum()),
@@ -340,13 +351,13 @@ def summarize_session(session, tracking_errors):
                    evaluation_samples=0, eval_duration_s=0., invalid_time_intervals=0)
         row['travel_time_s'] = result.get('duration_s') if row['success'] else None
         try:
-            path = np.atleast_2d(np.loadtxt(folder/'reference.csv',delimiter=',',skiprows=1))
-            if len(path)<2 or path.shape[1]!=3 or not np.isfinite(path).all() or np.any(np.linalg.norm(np.diff(path[:,:2],axis=0),axis=1)<=1e-9):
-                raise ValueError('invalid reference')
+            initial_pose, path, policy = recorded_geometry(session, trial, folder)
+            if row['reference_policy'] != policy:
+                raise ValueError('Result reference policy differs from recorded geometry')
             condition = config['conditions'][trial['task']]
             common_errors, projected, evaluation = tracking_metrics(
                 data['t'], np.c_[data['x'], data['y'], data['yaw']], path, condition,
-                manifest['starts'][trial['task']]['map_pose'], fresh)
+                initial_pose, fresh)
             row.update(common_errors)
             if 'orientation_length_m' in condition:
                 write_orientation_series(folder, data, projected, evaluation, fresh, condition, common)
@@ -360,7 +371,7 @@ def summarize_session(session, tracking_errors):
                     direction = path[-1,:2]-path[0,:2]; direction /= np.linalg.norm(direction)
                     normal = np.array([-direction[1],direction[0]])
                     signed = (poses[:,:2]-path[0,:2])@normal
-                    initial = float((np.asarray(manifest['starts'][trial['task']]['map_pose'])[:2]-path[0,:2])@normal)
+                    initial = float((initial_pose[:2]-path[0,:2])@normal)
                     opposite = np.maximum(-np.sign(initial)*signed,0)
                     row.update(lateral_initial_error_m=initial,lateral_crossing_raw_m=float(opposite.max()),
                                lateral_crossing_beyond_deadband_m=float(max(0,opposite.max()-settings['lateral_deadband_m'])))
@@ -370,7 +381,7 @@ def summarize_session(session, tracking_errors):
                         row['lateral_convergence_time_s']=float(data['t'][original_index])
                         # No distance inferred across missing/stale poses.
                         if fresh[:original_index+1].all():
-                            xy = np.vstack((manifest['starts'][trial['task']]['map_pose'][:2],poses[:hit[0]+1,:2]))
+                            xy = np.vstack((initial_pose[:2],poses[:hit[0]+1,:2]))
                             row['lateral_convergence_distance_m']=float(np.linalg.norm(np.diff(xy,axis=0),axis=1).sum())
                 if trial['task'] in ('E1_orientation_nominal', 'E1_orientation_half', 'E1_orientation_quarter'):
                     signed = tracking_errors(poses, path, signed=True)[:, 1]
@@ -398,8 +409,9 @@ def summarize_session(session, tracking_errors):
                     fields=('scan_age_s','scan_source_age_s','scan_min_range_m','speed_m_s')
                     if set(fields)<=set(data.dtype.names):
                         sensor_good=fresh & np.isfinite(data['speed_m_s']) & ~np.isnan(data['scan_min_range_m'])
-                        for key in fields[:2]:
-                            sensor_good &= (data[key]>=0)&(data[key]<=max_age)
+                        sensor_good &= (data['scan_age_s']>=0)&(data['scan_age_s']<=max_age)
+                        sensor_good &= source_age_is_fresh(data['scan_source_age_s'], max_age,
+                                                          future_tolerance=future_tolerance)
                         near=sensor_good & (data['scan_min_range_m']<=settings['obstacle_near_range_m'])
                         row['obstacle_near_samples']=int(near.sum())
                         row['obstacle_near_missing_or_stale_samples']=int((~sensor_good).sum())
@@ -426,16 +438,20 @@ def summarize_session(session, tracking_errors):
             row['compute_time_'+stat]=timings[trial['id']][stat]
         rows.append(row)
     groups=[]
-    for task,controller in sorted({(t['task'],t['controller']) for t in manifest['trials']}):
-        selected=[r for r in rows if r['task']==task and r['controller']==controller]
+    for task,controller,direction in sorted({(t['task'],t['controller'],t.get('direction','forward')) for t in manifest['trials']}):
+        selected=[r for r in rows if r['task']==task and r['controller']==controller and r['direction']==direction]
+        planned=sum(t['task']==task and t['controller']==controller and t.get('direction','forward')==direction
+                    for t in manifest['trials'])
         complete=[r for r in selected if r['success'] and r['fresh_pose_samples']>0 and not r['data_errors']
                   and r['invalid_after_warmup_samples']==0 and r['missing_command_prefix_s'] is not None
                   and r['missing_command_prefix_s']<=1/manifest['control_frequency_hz']]
         succeeded=sum(r['success'] for r in selected)
-        item=dict(task=task,controller=controller,planned=5,recorded=len(selected),succeeded=succeeded,
-                  pending=5-len(selected),failed_or_incomplete=len(selected)-succeeded,valid_successes=len(complete),
+        item=dict(task=task,controller=controller,direction=direction,planned=planned,recorded=len(selected),succeeded=succeeded,
+                  reference_policies=sorted({r['reference_policy'] for r in selected}),
+                  mixed_reference_policies=len({r['reference_policy'] for r in selected})>1,
+                  pending=planned-len(selected),failed_or_incomplete=len(selected)-succeeded,valid_successes=len(complete),
                   invalid_or_failed=len(selected)-len(complete),success_rate_attempted=succeeded/len(selected) if selected else None,
-                  success_rate_planned=succeeded/5,
+                  success_rate_planned=succeeded/planned,
                   yaw_error_role='reference_only' if controller in ('RPP','DWPP') else 'tracking',
                   missing_timing_runs=sum(r['timing_samples']==0 for r in selected),
                   missing_constraint_rate_runs=sum(r['constraint_violation_pct'] is None for r in selected),
@@ -456,6 +472,9 @@ def summarize_session(session, tracking_errors):
         with (session/'trial_metrics.csv').open('w') as stream:
             writer=csv.DictWriter(stream,fieldnames=list(rows[0]));writer.writeheader();writer.writerows(rows)
     report={'planned':len(manifest['trials']),'recorded':len(rows),'pending':len(manifest['trials'])-len(rows),
+            'maximum_future_source_skew_s':max((r['maximum_future_source_skew_s'] for r in rows),
+                                              default=CLOCK_FUTURE_TOLERANCE_S),
+            'future_source_skew_policy':'Per-trial recorded allowance; legacy records without the field use 0.020 s',
             'trials':rows,'groups':groups,'command_diagnostics':diagnostics,'controller_timing':timings,
             'note':'Finite observations from all attempts remain in means, with per-metric n and sample SD. Travel time requires success. Pose errors use fresh poses within the configured spatial window and adjacent-sample trapezoids. Quality flags never discard a trial. Timing covers delegated calls including exceptions, not the server loop. These are observations, not physical-robot validation.'}
     write_group_tables(session, groups)
@@ -495,13 +514,23 @@ def write_group_tables(session, groups):
         metrics = tuple(k for k in COMMON_METRICS if not (all_zero and k == 'constraint_violation_pct')) + transient_metrics(task)
         counts = ('controller','recorded','succeeded','valid_successes','evaluation_complete_count',
                   'constraint_unknown_samples','constraint_unknown_flagged_runs')
+        directions = any('direction' in g for g in selected)
+        if directions:
+            counts = ('controller', 'direction', *counts[1:])
+        planned_counts = all('planned' in g for g in selected)
+        if planned_counts:
+            index = counts.index('recorded')
+            counts = (*counts[:index], 'planned', *counts[index:])
         uncertainty = ('constraint_unknown_pct','constraint_violation_lower_pct','constraint_violation_upper_pct')
         columns = list(counts) + [k+'_'+s for k in metrics+uncertainty for s in ('mean','sd','n')]
+        current_starts = any('per_trial_current_pose' in g.get('reference_policies', []) for g in selected)
+        if current_starts:
+            columns += ['reference_policies', 'mixed_reference_policies']
         with (destination/(task+'.csv')).open('w', newline='') as stream:
             writer = csv.DictWriter(stream, fieldnames=columns, extrasaction='ignore')
             writer.writeheader(); writer.writerows(selected)
         lines = [f'# {task}', '', 'Values: mean ± sample SD (n). SD is undefined for n < 2.', '',
-                 '| Method | Recorded | Success | Quality-qualified | Window complete | Unknown cycles | Flagged runs | ' + ' | '.join(metrics+uncertainty) + ' |',
+                 '| Method | ' + ('Direction | ' if directions else '') + ('Planned | ' if planned_counts else '') + 'Recorded | Success | Quality-qualified | Window complete | Unknown cycles | Flagged runs | ' + ' | '.join(metrics+uncertainty) + ' |',
                  '|' + '---|'*(len(counts)+len(metrics)+len(uncertainty))]
         for g in selected:
             values = [str(g[k]) for k in counts]
@@ -510,6 +539,9 @@ def write_group_tables(session, groups):
                 values.append(('—' if mean is None else f'{mean:.8g}') + ' ± ' +
                               ('—' if sd is None else f'{sd:.8g}') + f' ({n})')
             lines.append('| ' + ' | '.join(values) + ' |')
+        if current_starts:
+            lines += ['', 'Per-trial current-pose paths are present. Placement policy is recorded in trial_metrics.csv; '
+                      'group CSV flags mixed_reference_policies when fixed and current-pose trials share a group.']
         if all_zero:
             note = 'Command constraint violation is 0% for every method over classified cycles; unknown-cycle counts and bounds are reported separately.'
             lines += ['', note]

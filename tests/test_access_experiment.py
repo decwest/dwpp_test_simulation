@@ -103,6 +103,61 @@ def test_laser_preflight_checks_source_time_and_usable_measurements(source, rece
             experiment.scan_quality(scan, received, 10.1)
 
 
+def test_source_clock_tolerance_preserves_stale_and_large_future_rejection():
+    ages = np.array([-.5, -.050001, -.05, -.035, -.023, -.02, -.013, 0., .2, .200001, np.nan, np.inf, -np.inf])
+    np.testing.assert_array_equal(experiment.source_age_is_fresh(ages),
+                                  [False, False, True, True, True, True, True, True, True, False, False, False, False])
+
+
+@pytest.mark.parametrize('ahead,received,valid', [(.023,10.,True),(.035,10.,True),(.049,10.,True),
+    (.051,10.,False),(.1,10.,False),(-.501,10.,False),(.023,9.4,False),(.023,10.01,False)])
+def test_scan_clock_allowance_does_not_accept_stale_or_future_receive_times(ahead,received,valid):
+    stamp_ns=round((10.+ahead)*1e9)
+    scan=SimpleNamespace(header=SimpleNamespace(frame_id='laser',stamp=SimpleNamespace(
+        sec=stamp_ns//1000000000,nanosec=stamp_ns%1000000000)),ranges=[.8],range_min=.05,range_max=5.)
+    if valid:
+        assert experiment.scan_quality(scan,received,10.)['source_age_s']==pytest.approx(-ahead)
+    else:
+        with pytest.raises(RuntimeError): experiment.scan_quality(scan,received,10.)
+
+
+def test_completion_waits_for_new_pose_and_continuous_physical_stop():
+    clock = [0.]
+    def spin(): clock[0] += .1
+    def sample():
+        # Action succeeded, but the cached yaw error is .320 rad while rotating.
+        if clock[0] < .4:
+            return [0, 0, .320, 0], False
+        if .6 < clock[0] < .8:
+            raise RuntimeError('TF temporarily unavailable')
+        return [0, 0, .02, 0], True
+    pose = experiment.wait_for_settled_pose(sample, spin, 3., clock=lambda: clock[0])
+    assert pose[2] == .02 and clock[0] >= 1.2
+
+
+@pytest.mark.parametrize('mode', ['moving', 'stale'])
+def test_completion_never_accepts_missing_stop_evidence(mode):
+    clock = [0.]
+    def spin(): clock[0] += .1
+    def sample():
+        if mode == 'stale':
+            raise RuntimeError('stale odom')
+        return [0, 0, 0, 0], False
+    with pytest.raises(RuntimeError, match='Post-goal stop not verified'):
+        experiment.wait_for_settled_pose(sample, spin, 1., clock=lambda: clock[0])
+
+
+def test_laser_tolerates_small_source_skew_but_not_future_local_receive():
+    scan = SimpleNamespace(header=SimpleNamespace(frame_id='laser', stamp=SimpleNamespace(sec=10, nanosec=113000000)),
+                           ranges=[1.], range_min=.05, range_max=5.)
+    assert experiment.scan_quality(scan, 10.09, 10.1)['source_age_s'] == pytest.approx(-.013)
+    with pytest.raises(RuntimeError, match='receive age'):
+        experiment.scan_quality(scan, 10.113, 10.1)
+    scan.header.stamp.nanosec = 150000000
+    with pytest.raises(RuntimeError, match='source age'):
+        experiment.scan_quality(scan, 10.09, 10.1)
+
+
 def test_errors_use_same_projected_position_and_wrapped_yaw():
     path = np.array([[0., 0., np.deg2rad(170)], [2., 0., np.deg2rad(-170)]])
     errors = experiment.tracking_errors(np.array([[1., .2, np.pi]]), path)
@@ -161,6 +216,39 @@ def test_runtime_configuration_mismatch_is_detected(tmp_path):
         experiment.verify_runtime_parameters(expected, runtime_files, 'DWVP')
 
 
+@pytest.mark.parametrize('changed', [None, 'general_goal_checker', 'turnaround_goal_checker', 'extra_checker'])
+def test_turnaround_checker_preserves_scored_goal_checker(tmp_path, changed):
+    config=experiment.render_parameters(ROOT/'params/hsrb_dwvp_access_params.yaml',experiment.default_config())
+    frozen=yaml.safe_dump(config)
+    expected=tmp_path/'expected.yaml'; expected.write_text(frozen)
+    actual=experiment.with_turnaround_checker(config)
+    assert yaml.safe_dump(config)==frozen
+    server=actual['controller_server']['ros__parameters']
+    if changed=='extra_checker': server['goal_checker_plugins'].append(changed)
+    elif changed: server[changed]['yaw_goal_tolerance']=.9
+    files={}
+    for name in ('controller_server','velocity_smoother'):
+        files[name]=tmp_path/(name+'.yaml')
+        files[name].write_text(yaml.safe_dump({'/'+name:actual[name]}))
+    if changed:
+        with pytest.raises(ValueError,match='Runtime parameter mismatch'):
+            experiment.verify_runtime_parameters(expected,files,'DWVP')
+    else:
+        experiment.verify_runtime_parameters(expected,files,'DWVP')
+        experiment.verify_runtime_parameters(expected,files,'VP_CLIP')
+
+
+@pytest.mark.parametrize('translation,policy', [(0.,'reanchor_after_stop'),(.1,'reanchor_after_stop'),(0.,'fixed_tolerance')])
+def test_turnaround_checker_is_only_for_unscored_in_place_motion(translation,policy):
+    packet=dict(goal_checker_id=experiment.TURNAROUND_GOAL_CHECKER,endpoint_policy=policy)
+    reference=np.array([[0.,0.,0.],[translation,0.,1.]])
+    if translation==0. and policy=='reanchor_after_stop':
+        assert experiment.transfer_goal_checker(packet,reference)==experiment.TURNAROUND_GOAL_CHECKER
+    else:
+        with pytest.raises(ValueError,match='unscored in-place'):
+            experiment.transfer_goal_checker(packet,reference)
+
+
 @pytest.mark.parametrize('controller,field,value', [
     ('DWVP', 'lookahead_time', 99.),
     ('DWVP', 'min_vel_y', -.9),
@@ -185,7 +273,7 @@ def test_selected_controller_tuning_is_frozen(tmp_path, controller, field, value
 
 
 @pytest.mark.parametrize('missing_prefix,source_age,expected_valid', [
-    (.02, 0., 1), (.4, 0., 0), (.02, 10., 0), (.02, -.5, 0),
+    (.02, 0., 1), (.02, -.013, 1), (.4, 0., 0), (.02, 10., 0), (.02, -.5, 0),
 ])
 def test_summary_retains_prefix_and_rejects_stale_source(tmp_path, missing_prefix, source_age, expected_valid):
     root = tmp_path / 'session'
@@ -203,8 +291,8 @@ def test_summary_retains_prefix_and_rejects_stale_source(tmp_path, missing_prefi
     assert report['trials'][0]['samples'] == 2
     assert report['trials'][0]['missing_command_prefix_s'] == missing_prefix
     assert report['trials'][0]['stale_or_missing_samples'] >= 1
-    assert report['trials'][0]['fresh_pose_samples'] == (2 if source_age == 0. else 0)
-    if source_age != 0.:
+    assert report['trials'][0]['fresh_pose_samples'] == (2 if source_age in (0., -.013) else 0)
+    if source_age not in (0., -.013):
         assert report['trials'][0]['position_rmse_m'] is None
     assert next(g for g in report['groups'] if g['task'] == report['trials'][0]['task'] and g['controller'] == report['trials'][0]['controller'])['valid_successes'] == expected_valid
 
@@ -270,6 +358,54 @@ def make_attempt(tmp_path,condition='E1_lateral',controller='DWVP',poses=None):
         for t,pose in zip(np.linspace(0,1,len(poses)),poses):
             f.write(','.join(map(str,[t,10+t,*pose,0,0,0,0,0,0,0,.4,.2]))+'\n')
     return root,folder,name
+
+
+@pytest.mark.parametrize('key,pose_samples,sensor_samples', [
+    ('tf_age_s', 3, 3), ('odom_source_age_s', 3, 3), ('scan_source_age_s', 3, 3),
+    ('odom_age_s', 0, 0), ('scan_age_s', 3, 0), ('raw_age_s', 3, 3), ('applied_age_s', 3, 3),
+])
+def test_summary_future_tolerance_only_applies_to_source_stamps(tmp_path, key, pose_samples, sensor_samples):
+    root, folder, _ = make_attempt(tmp_path, condition='E2_environment')
+    path = folder/'tracking.csv'
+    lines = path.read_text().splitlines()
+    index = lines[0].split(',').index(key)
+    updated = [lines[0]]
+    for line in lines[1:]:
+        fields = line.split(','); fields[index] = '-.013'
+        updated.append(','.join(fields))
+    path.write_text('\n'.join(updated)+'\n')
+    report = experiment.summarize(root)
+    row = report['trials'][0]
+    assert report['maximum_future_source_skew_s'] == .02
+    assert row['fresh_pose_samples'] == pose_samples
+    assert row['obstacle_near_samples'] == sensor_samples
+    if key in ('raw_age_s', 'applied_age_s', 'odom_age_s'):
+        assert row['stale_or_missing_samples'] == 3
+
+
+@pytest.mark.parametrize('recorded_limit,valid', [(None,False),(.02,False),(.05,True),(0.,False),(-1.,False),('bad',False)])
+def test_summary_preserves_recorded_clock_allowance(tmp_path, recorded_limit, valid):
+    root,folder,_=make_attempt(tmp_path,condition='E2_environment')
+    result_file=folder/'result.json'
+    result=json.loads(result_file.read_text())
+    if recorded_limit is not None:
+        result['maximum_future_source_skew_s']=recorded_limit
+        experiment.write_json(result_file,result)
+    path=folder/'tracking.csv'
+    lines=path.read_text().splitlines(); header=lines[0].split(','); updated=[lines[0]]
+    for line in lines[1:]:
+        fields=line.split(',')
+        for key in ('tf_age_s','odom_source_age_s','scan_source_age_s'):
+            fields[header.index(key)]='-.023'
+        updated.append(','.join(fields))
+    path.write_text('\n'.join(updated)+'\n')
+    original={p:p.read_bytes() for p in folder.iterdir() if p.is_file()}
+    report=experiment.summarize(root);row=report['trials'][0]
+    assert row['fresh_pose_samples']==(3 if valid else 0)
+    assert row['obstacle_near_samples']==(3 if valid else 0)
+    if recorded_limit in (.02,.05,0.):
+        assert row['maximum_future_source_skew_s']==recorded_limit
+    assert all(p.read_bytes()==value for p,value in original.items())
 
 
 def test_lateral_crossing_deadband_and_convergence_distance(tmp_path):

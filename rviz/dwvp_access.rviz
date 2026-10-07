@@ -69,6 +69,26 @@ Visualization Manager:
         Durability Policy: Transient Local
         History Policy: Keep Last
         Reliability Policy: Reliable
+    - Class: rviz_default_plugins/Path
+      Name: Unscored positioning
+      Enabled: true
+      Color: 230; 100; 230
+      Alpha: 1
+      Buffer Length: 1
+      Line Style: Billboards
+      Line Width: 0.02
+      Pose Style: Arrows
+      Pose Color: 230; 100; 230
+      Shaft Length: 0.06
+      Shaft Diameter: 0.01
+      Head Length: 0.025
+      Head Diameter: 0.025
+      Topic:
+        Value: /dwvp_access/return_path
+        Depth: 1
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
     - Class: rviz_default_plugins/Pose
       Name: Required condition start
       Enabled: true

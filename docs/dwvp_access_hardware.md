@@ -1,6 +1,243 @@
 # DWVP Access hardware recording protocol
 
-This revision prepares **80 trials; physical HSR trials remain zero**. Each assigned
+## One-terminal entry points (2026-10-07)
+
+In the sourced HSR container workspace, `./dwvp_access.sh mapping` starts SLAM
+Toolbox, mapping RViz and the existing F310 profile. Release LB, stop, and press
+Enter in that terminal to stop the joystick, verify stationary sensors, save the
+map, and close the owned launch processes. Maps use `maps/lab_<JST timestamp>/`;
+same-second names receive a suffix. Successful saves atomically update
+`maps/latest.json`. Save failures leave SLAM running for an Enter-triggered retry;
+Ctrl-C cancels without an implicit save. The free threshold is explicitly 0.196.
+
+`./dwvp_access.sh experiment` chooses that last successfully saved map, snapshots
+it, and starts AMCL, RViz and F310. Position the robot, set RViz's initial pose,
+verify map/scan agreement, release LB and press Enter. The workflow stops teleop,
+captures the start, prepares a new bidirectional E1 schedule, checks it, executes
+`batch --start-from-current`, and summarizes. The default is all 55 E1 trials;
+`--repeats 1` selects 11. `--conditions E1_lateral` restricts conditions. E2 remains
+in the manual map-fixed workflow below. The fixed alignment targets and measured
+per-trial reference placement are preserved.
+
+By default, each invocation starts fresh in
+`results/dwvp_access/<environment>/run_<JST timestamp>/session/`. Logs and the map
+snapshot live beside `session/`; `workflow.json` records completion/failure. The
+workflow never overwrites old sessions or automatically repeats failed scored trials. Existing
+mapping/navigation or nonstandard teleop blocks startup. Standard robot teleop is
+handed off as described below.
+Keyboard interruption or failure stops the owned batch before localization closes.
+`--map PATH` overrides map selection; `--dry-run` starts no nodes and creates no
+session. `--no-rviz` / `--no-joy` support isolated headless verification.
+
+The one-terminal workflow enables `batch --continue-on-endpoint-failure`:
+an action-successful, freshly verified physical stop outside the original endpoint
+tolerances remains a **failed trial**, then the schedule continues. It does not
+change tolerances, controller parameters or recorded success. Aborts, timeouts,
+stale sensors, unverified stops and alignment failures still stop the workflow.
+
+Use `./dwvp_access.sh experiment --resume [SESSION] --dry-run` to inspect pending
+trials, then omit `--dry-run` to localize on the saved map and press Enter to
+continue. With no session argument, `results/dwvp_access/latest.json` selects the
+previous experiment. Resume validates frozen input hashes and the batch's map
+hashes. It preserves recorded successes and verified stopped endpoint failures,
+never retries them, and rejects incomplete/aborted attempts or gaps. New startup
+logs go under the original run's `resumes/resume_<JST timestamp>/`. Input overrides
+such as `--map`, `--params` and `--conditions` are rejected during resume.
+
+To explicitly repeat failed trials, use
+`./dwvp_access.sh experiment --retry-failed [SESSION] --dry-run`, then omit
+`--dry-run` and set localization before pressing Enter. The source schedule must
+be fully recorded; only verified stopped endpoint failures are eligible. Source
+records and aggregates are preserved. A separate attempt goes under
+`<original run>/retries/retry_<JST timestamp>/session/`, with copied frozen inputs,
+source manifest/result snapshots and hashes. Successful source trials are omitted.
+Each retry starts from its freshly measured stopped pose, without returning to
+the old start or rotating to the old heading, including when resuming a retry
+created by an older version. Controller settings and local path geometry are
+preserved. Source direction labels identify the original attempts; they do not
+command the old map heading. Captures/results record
+`start_policy: current_pose_with_turnaround` and `source_direction`. The first leg
+uses the operator's stopped pose. Before each subsequent leg, turn in place to
+reverse the preceding recorded path's travel direction, then recapture the pose.
+Orientation trials change body yaw during translation, so adding pi to the final
+body yaw would point the wrong way. On resume, compare the first pending leg's
+current XY with the preceding trial's recorded stopped XY. Within 0.5 m, resolve
+the return direction from the recorded path, preventing an extra reversal after
+interruption. If farther away, use the operator's current position and heading
+without a turnaround, checking the full path with the same 3 cm clearance margin.
+This exception applies only to the first pending leg on resume; subsequent legs
+turn back normally. Missing or invalid previous stopped poses reject this choice.
+Record `start_mode: relocated_current_pose` and the distance in the turnaround
+diagnostic and start capture. Localization must be aligned before pressing Enter.
+For normal turnarounds, search within
++/-5 degrees of that nominal return heading in 1-degree steps, nearest first,
+without changing the current XY or the frozen local trial geometry. Candidates
+and stopped placements must clear the map with a 3 cm margin beyond robot radius.
+Turnarounds use DWVP with a separate 0.005 rad goal checker and a stopped-heading
+check of 0.05 rad. If the measured stopped path is blocked or heading exceeds that
+bound, recapture and correct in place, with at most three turns total. A failed
+action, stale sensor or unverified stop never qualifies for correction. No clear
+candidate or exhausted corrections stops before the next scored trial.
+Turns are recorded separately under `batches/<timestamp>/turnarounds/`, with unique
+attempt IDs; scored trials keep their frozen general goal checker. Candidate
+headings, captures, blocking cells and stopped paths are saved in `turnaround_checks/`.
+The next trial uses the same stopped capture that passed the final map check.
+Rejected placements retain their capture, path CSV and blocking cell coordinates
+under `batches/<timestamp>/path_checks/`, without reserving a scored trial. Choose
+an open current start position/heading and resume. No corrective motion is sent
+to imitate the historical start.
+Retry aggregates describe only that attempt, without replacing original failures
+or the original success-rate denominator. No input overrides or simultaneous
+`--resume` are allowed. Without SESSION the latest experiment pointer is used;
+starting a retry updates that pointer, so another invocation does not repeat its
+successful trials. Zero failures means no nodes or goals. An interrupted retry
+can use `--resume` under the same completed-prefix checks as other sessions.
+
+When standard JOY publishers are present, `mapping` and `experiment` first verify
+0.5 s of stationary wheel odometry with fresh arrivals and progressing source stamps,
+then use SSH to stop the robot's standard
+`joy_linux_node` and `joystick_control_node`. Only exact executables whose parent
+is `boot_app.launch.py` and whose cgroup matches the selected robot container are
+eligible. PID identity is rechecked and SIGINT is sent through pidfds. Parent
+launches and hardware drivers remain running. Startup proceeds only after the
+processes exit and the ROS graph has no existing `/joy` or velocity publishers.
+Other conflicts, SSH failure or a failed stop prevent starting PC JOY. The robot's
+startup files are unchanged and its JOY is not automatically restarted on exit.
+
+Defaults match the workspace's robot login: `HSR_IP` (fallback 192.168.50.10),
+administrator, docker.humble.robot.service. Use `--robot-host`, `--robot-user`,
+`--robot-container`, or `HSR_SSH_PASSWORD` to override them. Passwords are passed
+through sshpass's environment, never command arguments; an empty password selects
+SSH key authentication only. `--no-stop-robot-joy` disables the automatic stop while
+retaining all conflict checks. No SSH is performed without JOY conflicts or during
+dry-run. Handoff reports go to `log/robot_teleop/` and the session's `workflow.json`.
+Clock skew is reported but does not block stopping existing input processes; map
+capture and experiment motion retain their existing source-clock freshness limits.
+
+The standalone `ros2 launch ytlab2_hsr_modules mapping_joy.launch.py` also combines
+SLAM, RViz and F310, but timestamped saving belongs to the shell entry point.
+Rebuild `hsrb_mapping`, `ytlab2_hsr_modules`, and `dwpp_test_simulation` after adding
+these entry points (`./dwvp_access.sh build` includes them).
+
+## Measured starts and automatic bidirectional trials
+
+Start localization before freezing a session. Stop other navigation and teleop
+processes, initialize AMCL in RViz, and park at the desired near-side start.
+
+```bash
+./dwvp_access.sh localize map:=/home/dev/ros2_ws/maps/lab01/map_nav2.yaml
+# In another terminal, while stationary:
+./dwvp_access.sh prepare --output results/dwvp_access/auto01 \
+  --params src/third_party/dwpp_test_simulation/params/hsrb_dwvp_access_params.yaml \
+  --start-from-current --bidirectional --conditions E1
+./dwvp_access.sh batch --session results/dwvp_access/auto01 \
+  --map maps/lab01/map_nav2.yaml --dry-run
+# Sends motion goals and records all 55 E1 legs:
+./dwvp_access.sh batch --session results/dwvp_access/auto01 \
+  --map maps/lab01/map_nav2.yaml
+```
+
+The captured pose is the forward robot start for every E1 condition. The lateral
+reference starts 0.5 m to its right. Reverse legs rotate the canonical E1 geometry
+by pi, preserving the local initial error and orientation ramp; their starts are
+frozen at the far end. E2 keeps its map coordinates, reversing position order and
+adding pi to tangent headings for reverse trials. Supply an E2 CSV and omit
+`prepare --conditions E1` for all 80 trials. Conditions/repeats can be restricted
+at preparation; selection must preserve the frozen forward/reverse alternation.
+
+Both directions are scored and summarized separately. Only turning and positioning
+between legs are excluded, stored under `batches/<run>/alignments/`. The batch
+keeps AMCL running, restarts its controller/smoother/planner when parameters change,
+checks live map identity and command ownership, and monitors sensor freshness.
+Failure or interruption cancels the active goal, allows the smoother to reach zero,
+and stops without retrying or advancing. It stops at the last scored endpoint;
+an odd number of legs does not add an extra return. Existing completed trial IDs
+cannot be reused. The older non-bidirectional mode retains unscored returns.
+
+After an action succeeds, the recorder waits for smoothed zero output and 0.5 s
+of stationary, fresh wheel odometry, then checks the latest TF against the original
+0.1 m / 0.3 rad tolerances. The wait is bounded using the smoother's deceleration
+limits. `settling.csv` and `result.json` retain this check separately from the
+action duration and tracking metrics. A user-run HSR outbound trial succeeded,
+but its subsequent turn was previously rejected at 0.320 rad while still slowing;
+the recorder had evaluated its cached TF immediately after the success response.
+
+Use `batch --resume --dry-run` to inspect the remaining frozen schedule and
+`batch --resume` to execute it. Resume preserves only a contiguous successful
+prefix whose input hashes match, aligns from the current pose to the next start,
+and records that positioning in a new batch directory. Failed/incomplete scored
+trials and gaps are rejected; no existing trial or failed alignment is overwritten.
+Adding `--continue-on-endpoint-failure` also accepts a contiguous prefix containing
+verified stopped endpoint misses; those results remain failed. Old records without
+the machine-readable failure reason must include a matching final fresh, zero-command,
+stationary `settling.csv` sample. All other failed/incomplete attempts still block resume.
+An already recorded schedule sends no goals. A reverse leg can be first on resume.
+
+### Align, then place each E1 path at the measured stop
+
+For bidirectional E1 sessions, add `batch --start-from-current`. Each leg first
+aligns toward its **original frozen start position and heading**, which limits
+accumulated displacement. It then captures the actual stopped pose and rigidly
+places that trial's reference relative to it. The 2.5 m length, 0.5 m lateral
+offset, orientation ramp, methods and acceleration settings remain unchanged.
+`prepare --start-from-current` captures once; the batch flag captures every leg.
+E2 map-fixed routes do not support this option.
+
+Only these unscored alignments use `endpoint_policy=reanchor_after_stop`: a
+successful action, verified stop and fresh pose suffice even when the final
+residual exceeds 0.1 m / 0.3 rad. The residual and
+`final_pose_within_tolerances` remain in the alignment result. Aborted actions,
+stale data and failure to stop still fail. Scored trials retain the original
+endpoint limits. If already within the frozen start tolerance, alignment is skipped.
+
+The transfer path and the reference at both the intended and measured starts
+are checked against the static map with the robot radius. The actual path is
+published to RViz before recording. Dry-run loads the schedule and map; future
+measured placements can only be checked immediately before each leg.
+
+Each scored run stores `start_capture.json` (fixed alignment target and measured
+pose), `reference.csv` (sent geometry), and hashes in `trial.json`. Metrics use
+this measured start and reference. Existing records remain `session_fixed` and
+new ones use `per_trial_current_pose`; group output flags
+`mixed_reference_policies` when both contribute to the same group. Resume checks
+the frozen inputs and recorded geometry hashes without rewriting old results.
+
+For the existing `lab01_auto01` session, five recorded trials succeeded and 50
+remain. Keep localization running and stop other navigation/teleop nodes:
+
+```bash
+./dwvp_access.sh batch --session results/dwvp_access/lab01_auto01 \
+  --map maps/lab01/map_nav2.yaml --resume --start-from-current --dry-run
+# Sends motion goals:
+./dwvp_access.sh batch --session results/dwvp_access/lab01_auto01 \
+  --map maps/lab01/map_nav2.yaml --resume --start-from-current
+```
+
+`hsrb_moveit` requires `ament_package()` to generate its environment setup scripts;
+the workspace wrapper's build now includes this metadata package.
+
+Freshness checks allow TF and sensor source stamps up to 50 ms ahead of the
+receiving PC (`CLOCK_FUTURE_TOLERANCE_S`). Independently synchronized HSR and PC
+clocks were initially measured about 13.7 ms apart. On October 7 source stamps
+led the PC by up to 24.4 ms, repeatedly resetting stationary capture with the old
+20 ms allowance. The past-age limits stay unchanged (0.2 s for TF/odom,
+0.5 s for scan preflight, the configured metric age for offline analysis).
+The same rule applies to capture, preflight, trial completion, batch supervision,
+stationary noise and metrics. Local receive ages and command ordering retain a
+zero lower bound. Signed source ages are never clamped; capture, result, noise
+and summary JSON record `maximum_future_source_skew_s`. Larger future offsets
+still fail and require checking clock synchronization on both machines.
+Offline metrics use each result's recorded allowance, falling back to the legacy
+20 ms only for older records without that field. The per-trial metric rows retain
+the applied allowance and the overall summary reports their maximum; increasing
+the live allowance does not reinterpret previous trials.
+
+The following protocol describes the full set of local experimental conditions;
+the measured-start and bidirectional options change their map placement, not their
+local geometry, limits, or method assignments.
+
+This revision prepares **80 trials**. The user has recorded five successful HSR
+trials; a complete physical schedule has not been verified. Each assigned
 condition/controller combination has five repeats: lateral alignment (DWPP, DWVP;
 10 trials), orientation ramp at nominal, half and quarter acceleration (VP_CLIP, VP_SCALED,
 DWVP; 45 trials), and environment routes (RPP, DWPP, MPPI Omni, DWB, DWVP; 25 trials).
@@ -12,7 +249,8 @@ compares existing local planners. Synthetic checks are integration evidence only
 The executable sources are in `ytlab2_hsr/ros2_ws/src/third_party/dwpp_test_simulation`.
 The Japanese operator guide provides the full commands. The flow is
 `build → generate E2 path → prepare → launch → preview → preflight → run → summarize`.
-Only `run` sends a FollowPath goal. Repositioning between trials is manual.
+In that manual flow, only `run` sends a FollowPath goal and repositioning is manual.
+The `batch` flow above also sends goals and automates positioning.
 
 `params/dwvp_access_experiment.yaml` is the single source for nominal tuning,
 geometry, starts, tolerances and metric thresholds. `prepare` merges those

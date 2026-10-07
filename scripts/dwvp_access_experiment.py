@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Prepare 80 fixed-path trials, record one ROS trial, and summarize completed data.
 
-Preparation and analysis do not import ROS. Only the explicit ``run`` subcommand
-sends a FollowPath goal. A session fixes one map origin for all methods.
+Offline preparation and analysis do not import ROS. ``prepare --start-from-current``
+observes localization without motion. ``run`` sends one FollowPath goal; the batch
+tool also uses this recorder for separately stored relocations. Origins are frozen
+across methods; measured-start sessions use a separate origin for each E1 condition.
 """
 from __future__ import annotations
 
@@ -19,6 +21,48 @@ import time
 from pathlib import Path
 
 import numpy as np
+
+
+# Independently synchronized robot/PC clocks can differ slightly. Allow at most
+# 50 ms of future source time (11 mm per axis at the 0.22 m/s axis limit).
+# The real HSR produced source stamps about 24 ms ahead of the PC after NTP
+# synchronization; a 20 ms bound repeatedly reset stationary capture.
+# Receive ages and command ordering use the local clock and remain nonnegative.
+# Keep signed ages in recordings; never clamp or rewrite source timestamps.
+CLOCK_FUTURE_TOLERANCE_S = .05
+LEGACY_CLOCK_FUTURE_TOLERANCE_S = .02
+TURNAROUND_GOAL_CHECKER = 'turnaround_goal_checker'
+TURNAROUND_YAW_TOLERANCE = .005
+
+
+def with_turnaround_checker(parameters):
+    """Add an unscored in-place heading checker without changing trial tuning."""
+    parameters = copy.deepcopy(parameters)
+    server = parameters['controller_server']['ros__parameters']
+    if TURNAROUND_GOAL_CHECKER in server['goal_checker_plugins']:
+        raise ValueError('Turnaround checker must not be part of frozen trial parameters')
+    server['goal_checker_plugins'] = [*server['goal_checker_plugins'], TURNAROUND_GOAL_CHECKER]
+    server[TURNAROUND_GOAL_CHECKER] = dict(plugin='nav2_controller::SimpleGoalChecker',
+        stateful=False, xy_goal_tolerance=server['general_goal_checker']['xy_goal_tolerance'],
+        yaw_goal_tolerance=TURNAROUND_YAW_TOLERANCE)
+    return parameters
+
+
+def transfer_goal_checker(transfer, reference):
+    checker = transfer.get('goal_checker_id', 'general_goal_checker')
+    if checker == TURNAROUND_GOAL_CHECKER:
+        if (transfer.get('endpoint_policy') != 'reanchor_after_stop'
+                or reference.shape != (2, 3) or not np.isfinite(reference).all()
+                or np.linalg.norm(reference[1, :2]-reference[0, :2]) > 1e-6):
+            raise ValueError('Turnaround checker is only for unscored in-place turns')
+    elif checker != 'general_goal_checker':
+        raise ValueError('Unknown transfer goal checker')
+    return checker
+
+
+def source_age_is_fresh(age, maximum_age=.2, *, future_tolerance=CLOCK_FUTURE_TOLERANCE_S):
+    """Scalar/array freshness for remote TF/sensor stamps, not receive times."""
+    return (age >= -future_tolerance) & (age <= maximum_age)
 
 
 def digest(path):
@@ -142,7 +186,49 @@ def transform_poses(poses, origin):
 
 
 def start_pose(manifest, trial):
-    return np.asarray(manifest['starts'][trial['task']]['map_pose'], dtype=float)
+    return np.asarray(trial.get('start_pose', manifest['starts'][trial['task']]['map_pose']), dtype=float)
+
+
+def origin_from_start(current, local_start):
+    """Invert the rigid transform so a condition starts at the measured pose."""
+    current, local_start = np.asarray(current, dtype=float), np.asarray(local_start, dtype=float)
+    if current.shape != (3,) or local_start.shape != (3,) or not np.isfinite([current, local_start]).all():
+        raise ValueError('Finite x,y,yaw start poses required')
+    yaw = float(wrap(current[2] - local_start[2]))
+    offset = transform_poses(local_start, [0., 0., yaw])
+    return [float(current[0] - offset[0]), float(current[1] - offset[1]), yaw]
+
+
+def reanchor_trial(manifest, trial, reference, measured_pose):
+    """Rigidly place an E1 trial at its measured robot start, retaining offsets."""
+    if trial['task'] == 'E2_environment':
+        raise ValueError('Per-trial current starts support E1 only; E2 routes stay map-fixed')
+    transform = origin_from_start(measured_pose, start_pose(manifest, trial))
+    placed = dict(trial, start_pose=list(map(float, measured_pose)))
+    return placed, validate_path(transform_poses(reference, transform))
+
+
+def recorded_geometry(session, trial, folder):
+    """Load actual recorded geometry, validating a per-trial placement if present."""
+    folder = Path(folder)
+    manifest, frozen, template = load_trial(session, trial['id'])
+    path = validate_path(np.atleast_2d(np.loadtxt(folder/'reference.csv', delimiter=',', skiprows=1)))
+    metadata_file = folder/'trial.json'
+    metadata = json.loads(metadata_file.read_text()) if metadata_file.exists() else {}
+    policy = metadata.get('reference_policy', 'session_fixed')
+    if policy == 'per_trial_current_pose':
+        if (metadata.get('trial') != frozen or metadata.get('manifest_sha256') != digest(Path(session)/'manifest.json')
+                or metadata.get('reference_sha256') != digest(folder/'reference.csv')
+                or metadata.get('start_capture_sha256') != digest(folder/'start_capture.json')):
+            raise ValueError('Recorded current-start geometry or capture changed')
+        captured = json.loads((folder/'start_capture.json').read_text())['capture']['pose']
+        placed, expected = reanchor_trial(manifest, frozen, template, captured)
+        if path.shape != expected.shape or not np.allclose(path, expected, atol=1e-9, rtol=0):
+            raise ValueError('Recorded reference differs from the captured E1 placement')
+        return start_pose(manifest, placed), path, policy
+    if policy != 'session_fixed':
+        raise ValueError('Unknown recorded reference policy')
+    return start_pose(manifest, frozen), path, policy
 
 
 def check_start_pose(current, manifest, trial):
@@ -160,9 +246,28 @@ def validate_path(path):
     return path
 
 
-def prepare(output, params, origin=None, environment_path=None, seed=20261004, config_file=None):
+def prepare(output, params, origin=None, environment_path=None, seed=20261004, config_file=None,
+            *, current_start=None, bidirectional=False, conditions=None, repeats=None):
     import yaml
     config = yaml.safe_load(Path(config_file).read_text()) if config_file else default_config()
+    if current_start is not None:
+        if origin is not None:
+            raise ValueError('Choose --origin or a measured current start, not both')
+        # E1 conditions share the measured robot start, not their path origins.
+        origins = {name: origin_from_start(current_start, config['conditions'][name]['start_pose'])
+                   for name in CONDITIONS if name != 'E2_environment'}
+        origin = origins['E1_lateral']
+    else:
+        origins = {}
+    selected_conditions = [c for item in (conditions or CONDITIONS) for c in
+                           (CONDITIONS[:-1] if item == 'E1' else [item])]
+    selected_repeats = list(range(1, 6)) if repeats is None else sorted(set(repeats))
+    if not selected_conditions or not set(selected_conditions) <= set(CONDITIONS):
+        raise ValueError('Unknown or empty condition selection')
+    if not selected_repeats or not set(selected_repeats) <= set(range(1, 6)):
+        raise ValueError('Repeats must be in 1..5')
+    if bidirectional and (origin is None or ('E2_environment' in selected_conditions and environment_path is None)):
+        raise ValueError('Bidirectional preparation requires a start/origin and an E2 route when E2 is selected')
     # Reject non-finite settings before reserving the output directory.
     def finite_settings(value):
         if isinstance(value, dict):
@@ -249,11 +354,13 @@ def prepare(output, params, origin=None, environment_path=None, seed=20261004, c
         else:
             if len(pose) != 3 or not np.isfinite(pose).all():
                 raise ValueError('Condition start pose must be finite x,y,yaw')
-            starts[name] = {'local_pose': pose, 'map_pose': transform_poses(pose, origin).tolist() if origin is not None else None}
+            starts[name] = {'local_pose': pose, 'map_pose': transform_poses(pose, origins.get(name, origin)).tolist() if origin is not None else None}
     trials = []
     rng = random.Random(seed)
-    for repeat in range(1, 6):
+    for repeat in selected_repeats:
         for task in CONDITIONS:
+            if task not in selected_conditions:
+                continue
             methods = list(config['conditions'][task]['methods'])
             rng.shuffle(methods)
             trials.extend({'id': f'{task}_{controller}_r{repeat}', 'task': task,
@@ -261,6 +368,24 @@ def prepare(output, params, origin=None, environment_path=None, seed=20261004, c
                            'acceleration_scale': config['conditions'][task]['acceleration_scale'],
                            'params_file': parameter_sets[task]['file'],
                            'params_sha256': parameter_sets[task]['sha256']} for controller in methods)
+    if bidirectional:
+        for index, trial in enumerate(trials):
+            task = trial['task']
+            trial['direction'] = 'forward' if index % 2 == 0 else 'reverse'
+            trial['start_pose'] = starts[task]['map_pose']
+            if task == 'E2_environment':
+                if trial['direction'] == 'reverse':
+                    end = routes[task][-1].copy()
+                    end[2] = wrap(end[2] + np.pi)
+                    trial['start_pose'] = end.tolist()
+            else:
+                forward_origin = origins.get(task, origin)
+                trial['map_origin'] = forward_origin
+                if trial['direction'] == 'reverse':
+                    end = transform_poses(routes[task][-1], forward_origin)
+                    end[2] = wrap(starts[task]['map_pose'][2] + np.pi)
+                    trial['start_pose'] = end.tolist()
+                    trial['map_origin'] = origin_from_start(end, config['conditions'][task]['start_pose'])
     manifest = {'schema_version': 3, 'seed': seed, 'frame': 'map', 'map_origin': origin,
                 'params_file': 'nav2_params.yaml', 'params_sha256': digest(output / 'nav2_params.yaml'),
                 'config_file': 'experiment_config.yaml', 'config_sha256': digest(output / 'experiment_config.yaml'),
@@ -268,6 +393,13 @@ def prepare(output, params, origin=None, environment_path=None, seed=20261004, c
                 'paths': paths, 'starts': starts, 'trials': trials, 'parameter_sets': parameter_sets,
                 'software_manifest_status': 'Regenerate after commit; working tree is not a committed release',
                 'status': 'prepared_unrecorded'}
+    if bidirectional:
+        manifest['bidirectional'] = True
+        manifest['direction_policy'] = 'alternate scored forward/reverse legs; rotate canonical E1 geometry by pi for reverse'
+    if current_start is not None:
+        manifest['map_origins'] = origins
+        manifest['measured_start'] = list(map(float, current_start))
+        manifest['origin_policy'] = 'E1 condition starts share one measured map pose; E2 remains map-fixed'
     write_json(output / 'manifest.json', manifest)
     return manifest
 
@@ -300,7 +432,10 @@ def load_trial(session, trial_id):
         raise ValueError('Trial acceleration profile differs from the frozen configuration')
     path = validate_path(np.loadtxt(session / record['file'], delimiter=',', skiprows=1))
     if record['frame'] == 'local':
-        path = transform_poses(path, manifest['map_origin'])
+        path = transform_poses(path, trial.get('map_origin', manifest.get('map_origins', {}).get(trial['task'], manifest['map_origin'])))
+    elif trial.get('direction') == 'reverse':
+        path = path[::-1].copy()
+        path[:, 2] = wrap(path[:, 2] + np.pi)
     return manifest, trial, path
 
 
@@ -329,18 +464,20 @@ def verify_runtime_parameters(expected_file, runtime_files, controller):
     import yaml
     expected = yaml.safe_load(Path(expected_file).read_text())
     for node in ('controller_server', 'velocity_smoother'):
-        wanted = flatten_parameters(expected[node]['ros__parameters'])
-        # Freeze all supplied tuning, including nested critics and checkers.
-        # Parameters of controllers not used by this trial do not affect it.
-        if node == 'controller_server':
-            unused = set(wanted['controller_plugins']) - {controller}
-            wanted = {k: v for k, v in wanted.items()
-                      if not any(k.startswith(other + '.') for other in unused)}
         snapshot = yaml.safe_load(Path(runtime_files[node]).read_text())
         actual = snapshot.get('/' + node, snapshot.get(node))
         if actual is None:
             raise ValueError('Runtime snapshot is missing node ' + node)
         actual = flatten_parameters(actual['ros__parameters'])
+        wanted = flatten_parameters(expected[node]['ros__parameters'])
+        # Freeze all supplied tuning, including nested critics and checkers.
+        # Parameters of controllers not used by this trial do not affect it.
+        if node == 'controller_server':
+            if TURNAROUND_GOAL_CHECKER in actual.get('goal_checker_plugins', []):
+                wanted = flatten_parameters(with_turnaround_checker(expected)[node]['ros__parameters'])
+            unused = set(wanted['controller_plugins']) - {controller}
+            wanted = {k: v for k, v in wanted.items()
+                      if not any(k.startswith(other + '.') for other in unused)}
         for field, value in wanted.items():
             if field not in actual or actual[field] != value:
                 raise ValueError(f'Runtime parameter mismatch: {node}.{field}')
@@ -410,7 +547,7 @@ def session_status(session):
             state = 'needs_route'
         else:
             state = 'pending'
-        rows.append({'trial': trial['id'], 'status': state})
+        rows.append({'trial': trial['id'], 'status': state, 'direction': trial.get('direction', 'forward')})
     return rows
 
 
@@ -460,8 +597,10 @@ def scan_quality(scan, received, stamp):
     """Validate sensor timing and usable ranges; static laser TF has no age test."""
     source = scan.header.stamp.sec + scan.header.stamp.nanosec / 1e9
     receive_age, source_age = stamp - received, stamp - source
-    if not scan.header.frame_id or not (0 <= receive_age <= .5 and 0 <= source_age <= .5):
-        raise RuntimeError('A fresh laser scan with source timestamps and a frame is required')
+    if not scan.header.frame_id or not (0 <= receive_age <= .5 and source_age_is_fresh(source_age, .5)):
+        raise RuntimeError(f'A fresh laser scan with source timestamps and a frame is required '
+                           f'(receive age {receive_age:.3f} s, source age {source_age:.3f} s; '
+                           f'future tolerance {CLOCK_FUTURE_TOLERANCE_S:.3f} s)')
     ranges = np.asarray(scan.ranges)
     usable = (np.isfinite(ranges) & (ranges >= scan.range_min) & (ranges <= scan.range_max)) | np.isposinf(ranges)
     if not len(ranges) or not np.any(usable) or not (0 <= scan.range_min < scan.range_max):
@@ -477,7 +616,33 @@ def scan_minimum_range(scan):
     return math.inf if np.any(np.isposinf(ranges)) else math.nan
 
 
-def run(session, trial_id, base_frame='base_link', odom_topic='/omni_base_controller/wheel_odom', preflight_only=False):
+def wait_for_settled_pose(sample, spin_once, timeout, *, clock=time.monotonic):
+    """Observe a continuous stationary interval after the action; send no goal.
+
+    sample() must reject stale input and return (pose, stopped). A success action
+    response can precede delivery of its final TF and the smoother's deceleration.
+    """
+    begin = clock()
+    stable_since = None
+    reason = 'No fresh stop observation'
+    while clock() - begin < timeout:
+        spin_once()
+        try:
+            pose, stopped = sample()
+            if not stopped:
+                raise RuntimeError('Robot or smoothed command is still moving')
+            if stable_since is None:
+                stable_since = clock()
+            if clock() - stable_since >= .5:
+                return pose
+        except Exception as exc:
+            reason = str(exc)
+            stable_since = None
+    raise RuntimeError(f'Post-goal stop not verified within {timeout:.1f} s: {reason}')
+
+
+def run(session, trial_id, base_frame='base_link', odom_topic='/omni_base_controller/wheel_odom', preflight_only=False,
+        *, transfer=None, start_capture_file=None):
     import uuid
     import rclpy
     from action_msgs.msg import GoalStatus
@@ -497,13 +662,60 @@ def run(session, trial_id, base_frame='base_link', odom_topic='/omni_base_contro
 
     session = Path(session)
     manifest, trial, reference = load_trial(session, trial_id)
+    frozen_trial = dict(trial)
+    capture_packet = None
+    endpoint_policy = 'fixed_tolerance'
+    if start_capture_file is not None:
+        if transfer is not None:
+            raise ValueError('A transfer cannot reanchor a scored trial')
+        capture_packet = json.loads(Path(start_capture_file).read_text())
+        if (capture_packet.get('trial_id') != trial_id
+                or capture_packet.get('manifest_sha256') != digest(session/'manifest.json')):
+            raise ValueError('Start capture does not match the frozen trial/session')
+        trial, reference = reanchor_trial(manifest, trial, reference, capture_packet['capture']['pose'])
+    if transfer is not None:
+        if preflight_only:
+            raise ValueError('Transfer recording cannot be combined with preflight_only')
+        endpoint_policy = transfer.get('endpoint_policy', 'fixed_tolerance')
+        if endpoint_policy not in ('fixed_tolerance', 'reanchor_after_stop'):
+            raise ValueError('Unknown transfer endpoint policy')
+        manifest, trial = copy.deepcopy(manifest), dict(trial)
+        reference = np.asarray(transfer['path'], dtype=float)
+        transfer_goal_checker(transfer, reference)
+        if (reference.shape == (2, 3) and np.isfinite(reference).all()
+                and np.linalg.norm(reference[1, :2]-reference[0, :2]) <= 1e-6):
+            pass  # An unscored, in-place goal-heading adjustment by DWVP.
+        else:
+            reference = validate_path(reference)
+        initial = np.asarray(transfer['start'], dtype=float)
+        if initial.shape != (3,) or not np.isfinite(initial).all():
+            raise ValueError('Finite transfer start required')
+        manifest['starts'][trial['task']]['map_pose'] = initial.tolist()
+        trial['start_pose'] = initial.tolist()
+        trial['controller'] = 'DWVP'
     temporary = tempfile.TemporaryDirectory(prefix='dwvp-preflight-') if preflight_only else None
     folder = Path(temporary.name) if temporary else session / 'runs' / trial_id
+    if transfer is not None:
+        folder = Path(transfer['output'])
+        # Never let relocation data overwrite or masquerade as an experiment.
+        if session.resolve() / 'runs' in folder.resolve().parents:
+            raise ValueError('Transfer output must be outside the experimental runs directory')
     if temporary is None:
         folder.mkdir(parents=True, exist_ok=False)
     np.savetxt(folder / 'reference.csv', reference, delimiter=',', header='x,y,yaw', comments='')
-    write_json(folder / 'trial.json', {'trial': trial, 'manifest_sha256': digest(session / 'manifest.json'),
-                                    'params_sha256': trial['params_sha256'], 'clock': 'ROS time; event receive stamps'})
+    metadata = {'trial': frozen_trial if capture_packet is not None else trial,
+                'manifest_sha256': digest(session/'manifest.json'), 'params_sha256': trial['params_sha256'],
+                'clock': 'ROS time; event receive stamps',
+                'reference_policy': 'per_trial_current_pose' if capture_packet is not None else 'session_fixed',
+                'endpoint_policy': endpoint_policy,
+                'reference_sha256': digest(folder/'reference.csv')}
+    if capture_packet is not None:
+        write_json(folder/'start_capture.json', capture_packet)
+        metadata.update(actual_start_pose=start_pose(manifest, trial).tolist(),
+                        start_capture_sha256=digest(folder/'start_capture.json'))
+        metadata['start_policy'] = capture_packet.get('start_policy', 'align_then_current_pose')
+        metadata['source_direction'] = frozen_trial.get('direction', 'forward')
+    write_json(folder/'trial.json', metadata)
     # Keep the context alive on Ctrl-C until this client's goal is canceled.
     rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
     node = Node('dwvp_access_recorder')
@@ -563,7 +775,17 @@ def run(session, trial_id, base_frame='base_link', odom_topic='/omni_base_contro
                      node.create_subscription(Odometry, odom_topic, lambda m: callback('odom', m), qos_profile_sensor_data),
                      node.create_subscription(LaserScan, scan_topic, scan_callback, qos_profile_sensor_data)]
     track = writer('tracking.csv', ['t', 'stamp_s', 'x', 'y', 'yaw', 'tf_age_s', 'raw_age_s', 'applied_age_s', 'odom_age_s', 'odom_source_age_s', 'scan_age_s', 'scan_source_age_s', 'scan_min_range_m', 'speed_m_s'])
-    result = {'status': 'setup_failed', 'success': False}
+    result = {'status': 'setup_failed', 'success': False, 'direction': trial.get('direction', 'forward'),
+              'maximum_future_source_skew_s': CLOCK_FUTURE_TOLERANCE_S,
+              'reference_policy': metadata['reference_policy'],
+              'endpoint_policy': endpoint_policy,
+              'goal_checker_id': transfer_goal_checker(transfer, reference) if transfer is not None else 'general_goal_checker'}
+    if capture_packet is not None:
+        result['start_policy'] = metadata['start_policy']
+        result['source_direction'] = metadata['source_direction']
+    if transfer is not None:
+        result['purpose'] = 'reposition_only_not_an_experiment_trial'
+        result['direction'] = 'positioning'
     goal_handle = None
     accepted = response = None
     goal_uuid = UUID(uuid=list(uuid.uuid4().bytes))
@@ -639,9 +861,9 @@ def run(session, trial_id, base_frame='base_link', odom_topic='/omni_base_contro
                 current = pose()
             except Exception:
                 continue
-            if 'odom' in latest and 0 <= now() - latest['odom'][0] <= .2 and 0 <= odom_source_age(now()) <= .2 and 0 <= current[3] <= .2:
+            if 'odom' in latest and 0 <= now() - latest['odom'][0] <= .2 and source_age_is_fresh(odom_source_age(now())) and source_age_is_fresh(current[3]):
                 break
-        if current is None or 'odom' not in latest or not (0 <= current[3] <= .2 and 0 <= now() - latest['odom'][0] <= .2 and 0 <= odom_source_age(now()) <= .2):
+        if current is None or 'odom' not in latest or not (source_age_is_fresh(current[3]) and 0 <= now() - latest['odom'][0] <= .2 and source_age_is_fresh(odom_source_age(now()))):
             raise RuntimeError('Fresh map pose and odometry are required')
         check_start_pose(current, manifest, trial)
         scan_state = None
@@ -663,7 +885,7 @@ def run(session, trial_id, base_frame='base_link', odom_topic='/omni_base_contro
             raise RuntimeError('Laser preflight failed: ' + scan_error)
         # Sensor discovery can take several seconds; recheck the start pose afterward.
         current = pose()
-        if not (0 <= current[3] <= .2 and 0 <= now() - latest['odom'][0] <= .2 and 0 <= odom_source_age(now()) <= .2):
+        if not (source_age_is_fresh(current[3]) and 0 <= now() - latest['odom'][0] <= .2 and source_age_is_fresh(odom_source_age(now()))):
             raise RuntimeError('Map pose or odometry became stale during sensor preflight')
         check_start_pose(current, manifest, trial)
         result['preflight'] = {'scan_topic': scan_topic, 'scan': scan_state, 'base_frame': base_frame,
@@ -674,7 +896,7 @@ def run(session, trial_id, base_frame='base_link', odom_topic='/omni_base_contro
             return result
         msg = pose_path_message(reference, manifest['frame'], node.get_clock().now().to_msg())
         goal = FollowPath.Goal(); goal.path = msg
-        goal.controller_id = trial['controller']; goal.goal_checker_id = 'general_goal_checker'
+        goal.controller_id = trial['controller']; goal.goal_checker_id = result['goal_checker_id']
         accepted = client.send_goal_async(goal, goal_uuid=goal_uuid)
         rclpy.spin_until_future_complete(node, accepted, timeout_sec=10)
         if not accepted.done():
@@ -715,12 +937,66 @@ def run(session, trial_id, base_frame='base_link', odom_topic='/omni_base_contro
         else:
             status = response.result().status
             result['action_status'] = int(status)
+            settled = False
+            if status == GoalStatus.STATUS_SUCCEEDED:
+                smooth = config['velocity_smoother']['ros__parameters']
+                stopping_time = max(abs(v/a) for v, a in zip(smooth['max_velocity'], smooth['max_decel']))
+                settle_timeout = max(5., stopping_time + smooth.get('velocity_timeout', .5) + 2.)
+                settle_begin = time.monotonic()
+                settle_writer = writer('settling.csv', ['stamp_s', 'x', 'y', 'yaw', 'tf_age_s',
+                    'odom_age_s', 'odom_source_age_s', 'speed_m_s', 'yaw_rate_rad_s', 'applied_zero', 'fresh'])
+
+                def stop_sample():
+                    p = pose()
+                    stamp = now()
+                    odom = latest.get('odom')
+                    velocity = odom[1] if odom else None
+                    speed = math.hypot(velocity.linear.x, velocity.linear.y) if velocity else math.inf
+                    yaw_rate = abs(velocity.angular.z) if velocity else math.inf
+                    odom_age = stamp - odom[0] if odom else math.inf
+                    source_age = odom_source_age(stamp)
+                    applied = latest.get('applied')
+                    # The smoother may stop publishing after reaching zero;
+                    # fresh wheel odometry must still confirm a physical stop.
+                    zero = bool(applied and 'applied' in command_first and all(
+                        math.isfinite(v) and abs(v) < 1e-6 for v in
+                        (applied[1].linear.x, applied[1].linear.y, applied[1].angular.z)))
+                    fresh = bool(np.isfinite(p[:3]).all() and source_age_is_fresh(p[3])
+                                 and 0 <= odom_age <= .2 and source_age_is_fresh(source_age)
+                                 and math.isfinite(speed) and math.isfinite(yaw_rate))
+                    settle_writer.writerow([stamp, *p, odom_age, source_age, speed, yaw_rate, zero, fresh])
+                    if not fresh:
+                        raise RuntimeError('Fresh TF and wheel odometry required after goal completion')
+                    return p, zero and speed <= .005 and yaw_rate <= .01
+
+                try:
+                    wait_for_settled_pose(stop_sample, lambda: rclpy.spin_once(node, timeout_sec=.02), settle_timeout)
+                    settled = True
+                except RuntimeError as exc:
+                    result['error'] = str(exc)
+                result['settling'] = dict(verified=settled, duration_s=time.monotonic()-settle_begin,
+                                          timeout_s=settle_timeout, stationary_interval_s=.5)
+            # Scored runs and fixed-start transfers keep their original endpoint
+            # limits. A transfer followed by reanchoring needs a successful action
+            # and a fresh stopped pose; its residual is recorded, not rejected.
             last = pose()
-            within = 0 <= last[3] <= .2 and np.linalg.norm(np.asarray(last[:2]) - reference[-1, :2]) <= manifest['xy_tolerance_m'] and abs(float(wrap(last[2] - reference[-1, 2]))) <= manifest['yaw_tolerance_rad']
-            result.update(status='succeeded' if status == GoalStatus.STATUS_SUCCEEDED and within else 'failed',
-                          action_status=status, success=bool(status == GoalStatus.STATUS_SUCCEEDED and within),
+            fresh = bool(np.isfinite(last[:3]).all() and source_age_is_fresh(last[3]))
+            within = fresh and np.linalg.norm(np.asarray(last[:2]) - reference[-1, :2]) <= manifest['xy_tolerance_m'] and abs(float(wrap(last[2] - reference[-1, 2]))) <= manifest['yaw_tolerance_rad']
+            success = (status == GoalStatus.STATUS_SUCCEEDED and settled and fresh
+                       and (within or endpoint_policy == 'reanchor_after_stop'))
+            result.update(status='succeeded' if success else 'failed',
+                          action_status=status, success=bool(success),
+                          final_pose=last[:3], final_pose_within_tolerances=bool(within),
+                          final_pose_fresh=fresh,
                           duration_s=duration, final_position_error_m=float(np.linalg.norm(np.asarray(last[:2]) - reference[-1, :2])),
                           final_yaw_error_rad=abs(float(wrap(last[2] - reference[-1, 2]))))
+            if status == GoalStatus.STATUS_SUCCEEDED and settled and fresh and not within and not success:
+                result['failure_reason'] = 'endpoint_tolerance_exceeded'
+            if not success and 'error' not in result:
+                result['error'] = (f'Final stopped pose outside tolerances or action unsuccessful: '
+                    f'action_status={status}, position={result["final_position_error_m"]:.4f} m '
+                    f'(limit {manifest["xy_tolerance_m"]:.4f}), '
+                    f'yaw={result["final_yaw_error_rad"]:.4f} rad (limit {manifest["yaw_tolerance_rad"]:.4f})')
     except (Exception, KeyboardInterrupt) as exc:
         result.update(status='interrupted' if isinstance(exc, KeyboardInterrupt) else 'error', error=str(exc))
         if recording:
@@ -754,14 +1030,23 @@ def main():
     p = commands.add_parser('prepare')
     p.add_argument('--output', type=Path, required=True)
     p.add_argument('--params', type=Path, required=True)
-    p.add_argument('--origin', type=float, nargs=3, metavar=('X', 'Y', 'YAW'))
+    placement = p.add_mutually_exclusive_group()
+    placement.add_argument('--origin', type=float, nargs=3, metavar=('X', 'Y', 'YAW'))
+    placement.add_argument('--start-from-current', action='store_true',
+                           help='Freeze the current localized pose as the start of each E1 condition')
+    p.add_argument('--base-frame', default='base_link')
+    p.add_argument('--odom-topic', default='/omni_base_controller/wheel_odom')
     p.add_argument('--environment-path', type=Path, help='NavFn CSV in map coordinates')
     p.add_argument('--config', type=Path, help='Experiment geometry, common tuning and metric settings')
     p.add_argument('--seed', type=int, default=20261004)
+    p.add_argument('--bidirectional', action='store_true', help='Score alternating forward/reverse legs; freeze their starts')
+    p.add_argument('--conditions', nargs='+', choices=['E1', *CONDITIONS])
+    p.add_argument('--repeats', type=int, nargs='+', help='Freeze only these repetitions (1..5)')
     for command in ('run', 'preflight'):
         p = commands.add_parser(command)
         p.add_argument('--session', type=Path, required=True); p.add_argument('--trial', required=True)
         p.add_argument('--base-frame', default='base_link'); p.add_argument('--odom-topic', default='/omni_base_controller/wheel_odom')
+        p.add_argument('--start-capture', type=Path, help='Batch-captured E1 start; preserve local experimental geometry')
     p = commands.add_parser('parameters')
     p.add_argument('--session', type=Path, required=True); p.add_argument('--trial', required=True)
     p = commands.add_parser('preview')
@@ -777,7 +1062,18 @@ def main():
     p.add_argument('--max-age', type=float, default=.2)
     args = parser.parse_args()
     if args.command == 'prepare':
-        result = prepare(args.output, args.params, args.origin, args.environment_path, args.seed, args.config)
+        captured = None
+        if args.start_from_current:
+            if args.output.exists():
+                raise FileExistsError(f'Session already exists: {args.output}; choose a new name')
+            from dwvp_access_runtime import capture_start
+            captured = capture_start(args.base_frame, args.odom_topic)
+        result = prepare(args.output, args.params, args.origin, args.environment_path, args.seed, args.config,
+                         current_start=captured['pose'] if captured else None,
+                         bidirectional=args.bidirectional, conditions=args.conditions, repeats=args.repeats)
+        if captured:
+            write_json(args.output / 'start_capture.json', captured)
+            print('Frozen robot start [map x, y, yaw]: ' + str(captured['pose']))
         print(f"Prepared {len(result['trials'])} unrecorded trials in {args.output}")
     elif args.command == 'stationary-noise':
         from dwvp_access_noise import record_noise
@@ -788,7 +1084,7 @@ def main():
             raise SystemExit('Stationarity was not verified; inspect noise_samples.csv')
     elif args.command in ('run', 'preflight'):
         print(json.dumps(run(args.session, args.trial, args.base_frame, args.odom_topic,
-                             preflight_only=args.command == 'preflight'), indent=2))
+                             preflight_only=args.command == 'preflight', start_capture_file=args.start_capture), indent=2))
     elif args.command == 'parameters':
         _, trial, _ = load_trial(args.session, args.trial)
         print((args.session / trial['params_file']).resolve())
@@ -796,7 +1092,7 @@ def main():
         preview(args.session, args.trial)
     elif args.command == 'status':
         for row in session_status(args.session):
-            print(f"{row['trial']:<28} {row['status']}")
+            print(f"{row['trial']:<40} {row['direction']:<7} {row['status']}")
     else:
         result = summarize(args.session)
         print(f"Recorded {result['recorded']}/{result['planned']}; pending {result['pending']}")
