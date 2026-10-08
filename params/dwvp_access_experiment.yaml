@@ -61,6 +61,33 @@ conditions:
     methods: [RPP, DWPP, MPPI, DWB, DWVP]
     acceleration_scale: 1.0
     start_pose: null
+    # E2 plan v2 only; critic candidates are selected by scripts/dwvp_access_e2.py sweep.
+    controller_overrides:
+      RPP:
+        use_rotate_to_heading: false
+        use_cost_regulated_linear_velocity_scaling: false
+      DWPP:
+        use_rotate_to_heading: false
+        use_cost_regulated_linear_velocity_scaling: false
+      DWVP:
+        use_rotate_to_heading: false
+        use_cost_regulated_linear_velocity_scaling: false
+      MPPI:
+        PathAlignCritic:
+          use_path_orientations: true
+        PathAngleCritic:
+          cost_weight: 20.0
+      DWB:
+        # Preserve v2 despite the robot-session base template's standard rollout.
+        trajectory_generator_name: dwb_plugins::LimitedAccelGenerator
+        sim_time: 8.0
+        discretize_by_time: false
+        time_granularity: 0.5
+        limit_vel_cmd_in_traj: false
+        max_speed_xy: 0.22
+        PathAlign.forward_point_distance: 0.5
+        GoalAlign.forward_point_distance: 0.5
+        PathAlign.scale: 48.0
 metrics:
   lateral_deadband_m: 0.01
   lateral_convergence_ratio: 0.1

@@ -1,5 +1,7 @@
 # DWVP Access hardware recording protocol
 
+> For the current E2 settings and offline commands, see [e2_plan_v2.md](e2_plan_v2.md). E1 is unchanged; older E2 tuning below is retained as history.
+
 ## One-terminal entry points (2026-10-07)
 
 In the sourced HSR container workspace, `./dwvp_access.sh mapping` starts SLAM

@@ -1,5 +1,7 @@
 # MPPI・DWBのECPP実験2からの設定変更
 
+> For the current E2 settings and offline commands, see [e2_plan_v2.md](e2_plan_v2.md). E1 is unchanged; older E2 tuning below is retained as history.
+
 DWBは予測時間8.0 s、Oscillationの解除時間1.0 s、停止とみなす並進速度0.005 m/sを使う。
 予測時間と解除時間は前回の採用値を保ち、2026-10-06の続き2の依頼に従って停止速度だけを
 0.11 m/sから下げた。0.005 m/sは1周期の各軸の速度増分0.22/30=0.007333 m/sより小さく、

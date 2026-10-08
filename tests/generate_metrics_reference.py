@@ -9,16 +9,29 @@ from pathlib import Path
 import sys
 
 import numpy as np
-from omnidirectional_dwvp.access_metrics import evaluate
-from omnidirectional_dwvp.config import Config
-from omnidirectional_dwvp.paths import orientation_ramp_path, straight_path
-from omnidirectional_dwvp.simulation import simulate
-import omnidirectional_dwvp.access_metrics as source
+# Last simulator revision using this package's 0..length-0.6 m metric contract.
+# Later revisions evaluate whole runs. Pin the independent oracle, not E1 behavior.
+SIMULATOR_REFERENCE_REVISION = '4535f3e2c3d52a36e2916b5768099173251fd2d3'
 
 
 def main():
     output = Path(sys.argv[1])
     output.mkdir(parents=True, exist_ok=True)
+    import io
+    import subprocess
+    import tarfile
+    archive = subprocess.run(['git','archive',SIMULATOR_REFERENCE_REVISION,
+                              'src/omnidirectional_dwvp'],check=True,capture_output=True).stdout
+    source_root = output/'simulator_source'
+    source_root.mkdir(exist_ok=True)
+    with tarfile.open(fileobj=io.BytesIO(archive)) as bundle:
+        bundle.extractall(source_root)
+    sys.path.insert(0,str(source_root/'src'))
+    from omnidirectional_dwvp.access_metrics import evaluate
+    from omnidirectional_dwvp.config import Config
+    from omnidirectional_dwvp.paths import orientation_ramp_path, straight_path
+    from omnidirectional_dwvp.simulation import simulate
+    import omnidirectional_dwvp.access_metrics as source
     cases = []
     base = Config(lookahead_time=.75)
     for condition, methods, scale in (
@@ -43,6 +56,7 @@ def main():
     (output/'reference.json').write_text(json.dumps(dict(
         purpose='Synthetic simulator trajectories, not physical HSR trials',
         python=sys.version, numpy=np.__version__, source_sha256=sources,
+        simulator_revision=SIMULATOR_REFERENCE_REVISION, evaluation_interval='0 to length minus 0.6 m',
         absolute_tolerance=1e-9, relative_tolerance=0., cases=cases),indent=2,allow_nan=False)+'\n')
 
 

@@ -38,8 +38,7 @@ docker run --rm --network none --user "$(id -u):$(id -g)" \
       nav2_omnidirectional_dwvp_controller hsrb_mapping ytlab2_hsr_modules dwpp_test_simulation \
       --cmake-args -DBUILD_TESTING=OFF
     source /ws/install/setup.bash
-    python3 -m pytest -q -p no:cacheprovider /ws/src/dwpp_test_simulation/tests/test_access_experiment.py /ws/src/dwpp_test_simulation/tests/test_access_path.py /ws/src/dwpp_test_simulation/tests/test_access_metrics.py /ws/src/dwpp_test_simulation/tests/test_access_batch.py
-    python3 -m pytest -q -p no:cacheprovider /ws/src/dwpp_test_simulation/tests/test_access_workflow.py /ws/src/dwpp_test_simulation/tests/test_access_robot_teleop.py /ws/src/dwpp_test_simulation/tests/test_access_retry.py /ws/src/dwpp_test_simulation/tests/test_access_placement.py
+    python3 -m pytest -q -p no:cacheprovider /ws/src/dwpp_test_simulation/tests/test_access_*.py
     python3 /ws/src/dwpp_test_simulation/tests/ros_access_recorder_smoke.py --output /ws/recorder-smoke > /ws/recorder-smoke.log 2>&1 || {
       cat /ws/recorder-smoke.log
       exit 1

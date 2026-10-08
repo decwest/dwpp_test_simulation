@@ -164,14 +164,30 @@ def render_parameters(params, config, condition=None):
                         xy_goal_tolerance=config['trial']['xy_tolerance_m'])
             for i, axis in enumerate(('x', 'y', 'theta')):
                 ctrl.update({f'acc_lim_{axis}': accel[i], f'decel_lim_{axis}': decel[i]})
-            if ctrl.get('trajectory_generator_name') == 'dwb_plugins::StandardTrajectoryGenerator':
-                # Only LimitedAccelGenerator declares sim_period. The standard
-                # rollout advances acceleration at its configured time steps.
-                ctrl.pop('sim_period', None)
-                if ctrl.get('discretize_by_time') and ctrl.get('limit_vel_cmd_in_traj'):
-                    ctrl['time_granularity'] = 1.0/c['control_frequency_hz']
         if name == 'MPPI':
             ctrl.update(vx_max=hi[0], vx_min=lo[0], vy_max=hi[1], wz_max=hi[2], model_dt=1.0/c['control_frequency_hz'])
+    # Condition-scoped overrides leave all E1 renders byte-for-byte equivalent.
+    if condition:
+        def merge(target, updates):
+            for key, value in updates.items():
+                if isinstance(value, dict):
+                    merge(target[key], value)
+                else:
+                    target[key] = copy.deepcopy(value)
+        for name, updates in config['conditions'][condition].get('controller_overrides', {}).items():
+            # A fixed-route reacquisition narrows the scored method list but
+            # retains the full frozen controller configuration (including DWVP
+            # for unscored returns). Validate names, not schedule membership.
+            if name not in CONTROLLERS:
+                raise ValueError('Overrides require a known controller')
+            merge(cs[name], updates)
+    # Normalize the selected generator after condition overrides. E1 retains
+    # the robot-session standard rollout; E2 can select LimitedAccelGenerator.
+    dwb = cs['DWB']
+    if dwb.get('trajectory_generator_name') == 'dwb_plugins::StandardTrajectoryGenerator':
+        dwb.pop('sim_period', None)
+        if dwb.get('discretize_by_time') and dwb.get('limit_vel_cmd_in_traj'):
+            dwb['time_granularity'] = 1.0/c['control_frequency_hz']
     smoother = values['velocity_smoother']['ros__parameters']
     smoother.update({key: c[key] for key in ('max_velocity', 'min_velocity', 'max_accel', 'max_decel')})
     smoother['smoothing_frequency'] = float(c['control_frequency_hz'])

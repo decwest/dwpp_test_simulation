@@ -22,45 +22,114 @@ def sha(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def smooth_positions(xy, settings):
+def remove_subcell_cusps(xy, resolution):
+    """Remove NavFn's sub-cell reversals, which native Humble otherwise pins.
+
+    A forward-only NavFn route has no intended reverse segments. Only an interior
+    negative-dot-product vertex with BOTH adjacent edges <= one cell diagonal is
+    removed. Endpoints and larger-scale bends are preserved. Log every deletion;
+    the final circular-footprint collision check still applies.
+    """
+    points = [np.asarray(p,dtype=float) for p in xy]
+    removed = []
+    i = 1
+    while i < len(points)-1:
+        before, after = points[i]-points[i-1], points[i+1]-points[i]
+        if np.dot(before,after)<0 and max(np.linalg.norm(before),np.linalg.norm(after))<=math.sqrt(2)*resolution*(1+1e-6):
+            removed.append(points.pop(i).tolist())
+            i=max(1,i-1)
+        else:
+            i+=1
+    return np.asarray(points), removed
+
+
+def resample_positions(xy, spacing):
+    """Resample AFTER Nav2 smoothing, preserving endpoints and at most spacing."""
     xy = np.asarray(xy, dtype=float)
     if xy.ndim != 2 or xy.shape[1] != 2 or len(xy) < 2 or not np.isfinite(xy).all():
         raise ValueError('At least two finite path positions are required')
-    xy = xy[np.r_[True, np.linalg.norm(np.diff(xy, axis=0), axis=1)>1e-9]]
-    if len(xy)<2:
+    xy = xy[np.r_[True, np.linalg.norm(np.diff(xy, axis=0), axis=1) > 1e-9]]
+    if len(xy) < 2:
         raise ValueError('Path has no length')
-    spacing = settings['sample_spacing_m']
-    if spacing<=0 or not math.isfinite(spacing):
+    if spacing <= 0 or not math.isfinite(spacing):
         raise ValueError('sample_spacing_m must be positive')
-    arc = np.r_[0, np.cumsum(np.linalg.norm(np.diff(xy,axis=0),axis=1))]
-    sample = np.linspace(0,arc[-1],max(2,int(math.ceil(arc[-1]/spacing))+1))
-    original = np.c_[np.interp(sample,arc,xy[:,0]),np.interp(sample,arc,xy[:,1])]
-    result = original.copy()
-    if settings['method'] not in ('none','elastic'):
-        raise ValueError('Smoothing method must be none or elastic')
-    if settings['method']=='elastic':
-        a,b = settings['data_weight'],settings['smooth_weight']
-        if not (a>=0 and b>=0 and a+2*b<=1 and settings['iterations']>=1 and settings['tolerance_m']>0):
-            raise ValueError('Require nonnegative weights with data_weight + 2*smooth_weight <= 1')
-        for _ in range(settings['iterations']):
-            delta = a*(original[1:-1]-result[1:-1])+b*(result[:-2]+result[2:]-2*result[1:-1])
-            result[1:-1] += delta
-            if not len(delta) or np.max(np.abs(delta)) < settings['tolerance_m']:
-                break
-    return result
+    arc = np.r_[0, np.cumsum(np.linalg.norm(np.diff(xy, axis=0), axis=1))]
+    sample = np.linspace(0, arc[-1], max(2, int(math.ceil(arc[-1]/spacing))+1))
+    return np.c_[np.interp(sample, arc, xy[:, 0]), np.interp(sample, arc, xy[:, 1])]
 
 
-def tangent_path(xy):
-    xy = np.asarray(xy,dtype=float)
-    segments = np.diff(xy,axis=0)
-    if np.any(np.linalg.norm(segments,axis=1)<=1e-9):
+def tangent_path(xy, half_window_m=0.10):
+    """Forward secant from s-0.10 to s+0.10 m, clipped at the endpoints."""
+    xy = np.asarray(xy, dtype=float)
+    if len(xy) < 2 or not np.isfinite(xy).all() or not math.isfinite(half_window_m) or half_window_m <= 0:
+        raise ValueError('Finite positions and positive tangent window required')
+    spacing = np.linalg.norm(np.diff(xy, axis=0), axis=1)
+    if np.any(spacing <= 1e-9):
         raise ValueError('Duplicate positions after smoothing')
-    # Central secants, with forward/backward endpoint differences. Never infer reverse travel from input yaw.
-    tangent = np.gradient(xy,axis=0)
-    if np.any(np.linalg.norm(tangent,axis=1)<=1e-9):
+    arc = np.r_[0., np.cumsum(spacing)]
+    lo, hi = np.maximum(0., arc-half_window_m), np.minimum(arc[-1], arc+half_window_m)
+    tangent = np.c_[np.interp(hi, arc, xy[:, 0])-np.interp(lo, arc, xy[:, 0]),
+                    np.interp(hi, arc, xy[:, 1])-np.interp(lo, arc, xy[:, 1])]
+    if np.any(np.linalg.norm(tangent, axis=1) <= 1e-9):
         raise ValueError('Undefined tangent (cusp) after smoothing')
-    yaw = np.arctan2(tangent[:,1],tangent[:,0])
-    return np.c_[xy,yaw]
+    return np.c_[xy, np.arctan2(tangent[:, 1], tangent[:, 0])]
+
+
+def path_diagnostics(path, speed=0.22, omega_max=0.6):
+    from dwvp_access_experiment import validate_path
+    path = validate_path(path)
+    if not np.isfinite([speed, omega_max]).all() or speed <= 0 or omega_max <= 0:
+        raise ValueError('Positive finite speed and yaw-rate limit required')
+    spacing = np.linalg.norm(np.diff(path[:, :2], axis=0), axis=1)
+    arc = np.r_[0., np.cumsum(spacing)]
+    yaw = np.unwrap(path[:, 2])
+    # Required orientation rate, not an estimate from three noisy position points.
+    curvature = np.gradient(yaw, arc)
+    required = speed*curvature
+    step = np.diff(yaw)
+    excess = np.flatnonzero(np.abs(required) > omega_max)
+    # Also expose geometric segment curvature so yaw filtering cannot hide position wiggles.
+    segment_yaw = np.unwrap(np.arctan2(*np.diff(path[:, :2], axis=0).T[::-1]))
+    geometric = np.diff(segment_yaw)/((spacing[:-1]+spacing[1:])/2)
+    report = dict(points=len(path), length_m=float(arc[-1]), speed_m_s=speed, omega_max_rad_s=omega_max,
+        curvature_definition='gradient(unwrapped CSV yaw, cumulative XY chord length)',
+        spacing_m=dict(min=float(spacing.min()), mean=float(spacing.mean()), max=float(spacing.max())),
+        max_abs_curvature_per_m=float(np.abs(curvature).max()),
+        geometric_max_abs_curvature_per_m=float(np.abs(geometric).max()) if len(geometric) else 0.,
+        required_yaw_rate_abs_p90_rad_s=float(np.percentile(np.abs(required), 90)),
+        max_abs_required_yaw_rate_rad_s=float(np.abs(required).max()),
+        largest_orientation_step_deg=float(np.degrees(np.abs(step).max())),
+        largest_step_end_progress_m=float(arc[np.argmax(np.abs(step))+1]),
+        orientation_steps_over_5_deg=int(np.sum(np.abs(step)>np.deg2rad(5))),
+        excess_count=len(excess), excess_share_pct=100.*len(excess)/len(path),
+        excess_points=[dict(index=int(i), progress_m=float(arc[i]), x=float(path[i,0]), y=float(path[i,1]),
+                            curvature_per_m=float(curvature[i]), required_yaw_rate_rad_s=float(required[i])) for i in excess])
+    profile = np.c_[arc, path, np.degrees(np.r_[0., step]), curvature, required]
+    return report, profile, geometric
+
+
+def check_path(csv_file, output, speed=0.22, omega_max=0.6):
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    path = np.loadtxt(csv_file, delimiter=',', skiprows=1)
+    report, profile, geometric = path_diagnostics(path, speed, omega_max)
+    output = Path(output); output.mkdir(parents=True, exist_ok=False)
+    report.update(csv_sha256=sha(csv_file), source_csv=str(csv_file))
+    np.savetxt(output/'profile.csv', profile, delimiter=',', comments='',
+               header='progress_m,x,y,yaw,yaw_step_deg,curvature_per_m,required_yaw_rate_rad_s')
+    fig, axes = plt.subplots(4, 1, figsize=(10, 9), sharex=True)
+    for ax, values, label in zip(axes, [np.degrees(np.unwrap(path[:,2])), profile[:,4], profile[:,5], profile[:,6]],
+                               ['yaw [deg]', 'yaw step [deg]', 'curvature [1/m]', 'required yaw rate [rad/s]']):
+        ax.plot(profile[:,0], values); ax.set_ylabel(label); ax.grid(True, alpha=.3)
+    axes[2].plot(profile[1:-1,0], geometric, alpha=.4, label='XY segment curvature')
+    axes[2].legend()
+    for limit in (-omega_max, omega_max):
+        axes[3].axhline(limit, color='red', linestyle='--')
+    axes[-1].set_xlabel('progress [m]')
+    fig.tight_layout(); fig.savefig(output/'path_check.png', dpi=160); plt.close(fig)
+    (output/'report.json').write_text(json.dumps(report, indent=2, allow_nan=False)+'\n')
+    return report
 
 
 def load_map(file):
@@ -152,7 +221,7 @@ def generate(args):
     from ament_index_python.packages import get_package_prefix
     from action_msgs.msg import GoalStatus
     from geometry_msgs.msg import PoseStamped
-    from nav2_msgs.action import ComputePathToPose
+    from nav2_msgs.action import ComputePathToPose, SmoothPath
     from nav_msgs.msg import OccupancyGrid
     from rclpy.action import ActionClient
     from rclpy.node import Node
@@ -169,7 +238,16 @@ def generate(args):
     local_map=dict(info,image=image_name)
     (output/'map.yaml').write_text(yaml.safe_dump(local_map))
     (output/'path_config.yaml').write_text(yaml.safe_dump(config,sort_keys=False))
+    if config['smoothing']['method'] != 'nav2_simple_smoother':
+        raise ValueError('E2 requires Nav2 SimpleSmoother')
     params=planner_parameters(output/'map.yaml',config,info['resolution'])
+    params['smoother_server'] = {'ros__parameters': {
+        'smoother_plugins': ['simple_smoother'],
+        'simple_smoother': {'plugin': 'nav2_smoother::SimpleSmoother',
+            **{k: config['smoothing'][k] for k in ('w_data', 'w_smooth', 'max_its', 'tolerance', 'do_refinement')}}}}
+    # Newer Nav2 can expose this parameter; this Humble build hardcodes four.
+    if 'refinement_num' in config['smoothing']:
+        params['smoother_server']['ros__parameters']['simple_smoother']['refinement_num'] = config['smoothing']['refinement_num']
     paramfile=output/'planner_params.yaml';paramfile.write_text(yaml.safe_dump(params,sort_keys=False))
     processes=[];logs=[];rclpy.init();node=Node('dwvp_access_path_generator')
     costmaps=[]
@@ -185,9 +263,9 @@ def generate(args):
         processes.append(subprocess.Popen([str(binary),*extra],stdout=log,stderr=subprocess.STDOUT))
     try:
         spawn('tf2_ros','static_transform_publisher',['--x',str(args.start[0]),'--y',str(args.start[1]),'--yaw',str(args.start[2]),'--frame-id','map','--child-frame-id','base_link'])
-        for package,executable in (('nav2_map_server','map_server'),('nav2_planner','planner_server')):
+        for package,executable in (('nav2_map_server','map_server'),('nav2_planner','planner_server'),('nav2_smoother','smoother_server')):
             spawn(package,executable,['--ros-args','--params-file',str(paramfile)])
-        spawn('nav2_lifecycle_manager','lifecycle_manager',['--ros-args','-p','autostart:=true','-p',"node_names:=['map_server','planner_server']",'-p','bond_timeout:=0.0'])
+        spawn('nav2_lifecycle_manager','lifecycle_manager',['--ros-args','-p','autostart:=true','-p',"node_names:=['map_server','planner_server','smoother_server']",'-p','bond_timeout:=0.0'])
         client=ActionClient(node,ComputePathToPose,'/compute_path_to_pose')
         if not client.wait_for_server(timeout_sec=60):
             raise RuntimeError('NavFn action unavailable; see saved node logs')
@@ -216,8 +294,56 @@ def generate(args):
         handle=future.result();future=handle.get_result_async();rclpy.spin_until_future_complete(node,future,timeout_sec=60)
         if not future.done() or future.result().status!=GoalStatus.STATUS_SUCCEEDED:
             raise RuntimeError('NavFn path computation failed or timed out')
-        raw=np.array([[p.pose.position.x,p.pose.position.y] for p in future.result().result.path.poses])
-        path=tangent_path(smooth_positions(raw,config['smoothing']))
+        navfn_path = future.result().result.path
+        raw=np.array([[p.pose.position.x,p.pose.position.y] for p in navfn_path.poses])
+        removed = []
+        if config['planner'].get('remove_subcell_cusps', False):
+            cleaned, removed = remove_subcell_cusps(raw, info['resolution'])
+            # Use only retained native poses; do not perform custom position smoothing.
+            from dwvp_access_experiment import pose_path_message
+            navfn_path = pose_path_message(tangent_path(cleaned), 'map', node.get_clock().now().to_msg())
+        np.savetxt(output/'smoother_input_positions.csv',
+                   [[p.pose.position.x,p.pose.position.y] for p in navfn_path.poses],
+                   delimiter=',',header='x,y',comments='')
+        smoother = ActionClient(node, SmoothPath, '/smooth_path')
+        if not smoother.wait_for_server(timeout_sec=30):
+            raise RuntimeError('Smoother action unavailable')
+        # Action discovery precedes lifecycle activation; wait for ACTIVE explicitly.
+        from lifecycle_msgs.srv import GetState
+        from lifecycle_msgs.msg import State
+        state_client = node.create_client(GetState, '/smoother_server/get_state')
+        deadline = time.monotonic()+30
+        while time.monotonic()<deadline:
+            if state_client.wait_for_service(timeout_sec=.1):
+                state_future = state_client.call_async(GetState.Request())
+                rclpy.spin_until_future_complete(node,state_future,timeout_sec=1.)
+                if state_future.done() and state_future.result().current_state.id==State.PRIMARY_STATE_ACTIVE:
+                    break
+            rclpy.spin_once(node,timeout_sec=.1)
+        else:
+            raise RuntimeError('Smoother lifecycle did not activate')
+        node.destroy_client(state_client)
+        from dwvp_access_experiment import snapshot_parameters
+        runtime = snapshot_parameters(node, 'smoother_server')
+        (output/'smoother_server_runtime.yaml').write_text(yaml.safe_dump(runtime))
+        actual = runtime['/smoother_server']['ros__parameters']
+        if ('refinement_num' in config['smoothing'] and 'simple_smoother.refinement_num' not in actual):
+            raise ValueError('This Nav2 does not support refinement_num; omit it to use the documented native behavior')
+        request = SmoothPath.Goal(); request.path = navfn_path
+        request.smoother_id = 'simple_smoother'; request.max_smoothing_duration.sec = 10
+        request.check_for_collisions = True
+        future = smoother.send_goal_async(request)
+        rclpy.spin_until_future_complete(node, future, timeout_sec=30)
+        if not future.done() or future.result() is None or not future.result().accepted:
+            raise RuntimeError('Smoother rejected request or timed out')
+        future = future.result().get_result_async()
+        rclpy.spin_until_future_complete(node, future, timeout_sec=30)
+        if not future.done() or future.result().status != GoalStatus.STATUS_SUCCEEDED or not future.result().result.was_completed:
+            raise RuntimeError('Nav2 smoothing failed or was incomplete')
+        smoothed = np.array([[p.pose.position.x,p.pose.position.y] for p in future.result().result.path.poses])
+        np.savetxt(output/'simple_smoother_positions.csv',smoothed,delimiter=',',header='x,y',comments='')
+        path=tangent_path(resample_positions(smoothed,config['smoothing']['sample_spacing_m']),
+                          config['smoothing']['tangent_half_window_m'])
         assert_clear(path,info,blocked,config['planner']['robot_radius_m'])
         np.savetxt(output/'navfn_positions.csv',raw,delimiter=',',header='x,y',comments='')
         np.savetxt(output/'E2_environment.csv',path,delimiter=',',header='x,y,yaw',comments='')
@@ -229,6 +355,10 @@ def generate(args):
                   'path_config_sha256':sha(output/'path_config.yaml'),'smoothing':config['smoothing'],
                   'footprint_check':'circular footprint against occupied, unknown and outside-map cells',
                   'costmap_ready_before_goal':True,
+                  'smoother':'nav2_smoother::SimpleSmoother', 'smoother_action_completed':True,
+                  'removed_subcell_cusps':removed,
+                  'refinement_num':actual.get('simple_smoother.refinement_num', 4),
+                  'refinement_note':'Humble 1.1.19 uses four hardcoded refinements; requested default two is unsupported',
                   'physical_trials':0,'software_manifest_status':'Regenerate after commit'}
         (output/'path_metadata.json').write_text(json.dumps(metadata,indent=2)+'\n')
         print(output/'E2_environment.csv')
@@ -246,6 +376,16 @@ def generate(args):
 
 
 def main():
+    import sys
+    if len(sys.argv)>1 and sys.argv[1]=='check-path':
+        parser=argparse.ArgumentParser(description='Diagnose a frozen CSV without changing it')
+        parser.add_argument('command'); parser.add_argument('--path',type=Path,required=True)
+        parser.add_argument('--output',type=Path,required=True)
+        parser.add_argument('--speed',type=float,default=.22)
+        parser.add_argument('--omega-max',type=float,default=.6)
+        args=parser.parse_args()
+        print(json.dumps(check_path(args.path,args.output,args.speed,args.omega_max),indent=2))
+        return
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--map',type=Path,required=True)
     parser.add_argument('--start',type=float,nargs=3,required=True,metavar=('X','Y','YAW'))

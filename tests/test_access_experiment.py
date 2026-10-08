@@ -655,3 +655,56 @@ def test_orientation_speed_does_not_fill_missing_or_stale_values(tmp_path,speed,
     row=experiment.summarize(root)['trials'][0]
     assert row['orientation_min_speed_m_s'] is None
     assert row['orientation_speed_samples']==0
+
+
+def test_e2_overrides_do_not_leak_to_e1():
+    import copy
+    config=experiment.default_config()
+    baseline=copy.deepcopy(config)
+    baseline['conditions']['E2_environment'].pop('controller_overrides')
+    params=ROOT/'params/hsrb_dwvp_access_params.yaml'
+    for condition in experiment.CONDITIONS:
+        if condition.startswith('E1'):
+            assert experiment.render_parameters(params,config,condition)==experiment.render_parameters(params,baseline,condition)
+    cs=experiment.render_parameters(params,config,'E2_environment')['controller_server']['ros__parameters']
+    for name in ('RPP','DWPP','DWVP'):
+        assert cs[name]['use_rotate_to_heading'] is False
+        assert cs[name]['use_cost_regulated_linear_velocity_scaling'] is False
+        assert cs[name]['use_regulated_linear_velocity_scaling'] is False
+        assert cs[name]['approach_velocity_scaling_dist']==.6
+        assert cs[name]['lookahead_time']==.75
+    assert cs['DWB']['max_speed_xy']==.22
+    assert cs['DWB']['sim_time']==8.
+    assert cs['DWB']['trajectory_generator_name']=='dwb_plugins::LimitedAccelGenerator'
+    assert cs['DWB']['sim_period']==1/30
+    assert cs['DWB']['discretize_by_time'] is False
+    assert cs['DWB']['limit_vel_cmd_in_traj'] is False
+    assert cs['MPPI']['PathAlignCritic']['use_path_orientations'] is True
+
+
+@pytest.mark.parametrize('frequency', [20., 30.])
+def test_e2_generator_override_keeps_control_period_and_e1_rollout(frequency):
+    config=experiment.default_config()
+    config['common']['control_frequency_hz']=frequency
+    params=ROOT/'params/hsrb_dwvp_access_params.yaml'
+    for condition in experiment.CONDITIONS:
+        dwb=experiment.render_parameters(params,config,condition)['controller_server']['ros__parameters']['DWB']
+        if condition=='E2_environment':
+            assert dwb['trajectory_generator_name']=='dwb_plugins::LimitedAccelGenerator'
+            assert dwb['sim_period']==1/frequency and dwb['sim_time']==8.
+            assert dwb['discretize_by_time'] is False and dwb['limit_vel_cmd_in_traj'] is False
+        else:
+            assert dwb['trajectory_generator_name']=='dwb_plugins::StandardTrajectoryGenerator'
+            assert 'sim_period' not in dwb and dwb['sim_time']==1.7
+            assert dwb['time_granularity']==1/frequency
+
+
+def test_e2_single_method_keeps_frozen_overrides_for_unscored_returns():
+    config=experiment.default_config()
+    params=ROOT/'params/hsrb_dwvp_access_params.yaml'
+    full=experiment.render_parameters(params,config,'E2_environment')
+    config['conditions']['E2_environment']['methods']=['DWB']
+    assert experiment.render_parameters(params,config,'E2_environment')==full
+    config['conditions']['E2_environment']['controller_overrides']['unknown']={}
+    with pytest.raises(ValueError,match='known controller'):
+        experiment.render_parameters(params,config,'E2_environment')

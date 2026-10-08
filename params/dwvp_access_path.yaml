@@ -1,14 +1,18 @@
 planner:
   tolerance: 0.1
   use_astar: false
+  remove_subcell_cusps: true  # Log sub-cell reversals before native smoothing.
   allow_unknown: false
   robot_radius_m: 0.22
   inflation_radius_m: 0.70
   cost_scaling_factor: 3.0
 smoothing:
-  method: elastic
-  data_weight: 0.2
-  smooth_weight: 0.3
-  iterations: 200
-  tolerance_m: 0.000001
+  method: nav2_simple_smoother
+  w_data: 0.2
+  w_smooth: 0.3
+  max_its: 1000
+  tolerance: 1.0e-10
+  do_refinement: true
+  # Humble 1.1.19 hardcodes four refinements; refinement_num is not supported.
   sample_spacing_m: 0.02
+  tangent_half_window_m: 0.10

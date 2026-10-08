@@ -41,16 +41,28 @@ SPEC.loader.exec_module(experiment)
 
 
 def synthetic_environment_path():
-    x = np.linspace(0, 1.2, 121)
-    xy = np.c_[x, .15*np.sin(np.pi*x/1.2)]
-    return np.c_[xy, np.arctan2(np.gradient(xy[:,1]), np.gradient(xy[:,0]))]
+    """A 4.5 m E2 arc with tangent yaw and a 3 m turn radius.
+
+    This leaves a cruise interval before the experiment's final 0.6 m
+    approach zone and requires only 0.0734 rad/s at 0.22 m/s. The curved
+    approach also exercises DWB's 0.5 m forward-point goal transition.
+    """
+    distance = np.linspace(0., 4.5, 451)
+    radius = 3.
+    yaw = distance / radius
+    path = np.c_[radius * np.sin(yaw), radius * (1. - np.cos(yaw)), yaw]
+    progress = experiment.arclength(path[:, :2])
+    required_yaw_rate = .22 * np.gradient(np.unwrap(path[:, 2]), progress)
+    assert progress[-1] >= 4.
+    assert np.max(np.abs(required_yaw_rate)) < .6
+    return path
 
 
 
 class Plant(Node):
     """Integrate the common smoother output; publish only synthetic sensors."""
 
-    def __init__(self):
+    def __init__(self, bounds=None):
         super().__init__('access_controller_smoke_plant')
         self.x = self.y = self.yaw = 0.0
         self.applied = Twist()
@@ -82,10 +94,11 @@ class Plant(Node):
         grid.header.frame_id = 'map'
         grid.header.stamp = self.get_clock().now().to_msg()
         grid.info.resolution = 0.05
-        grid.info.width = grid.info.height = 200
-        grid.info.origin.position.x = grid.info.origin.position.y = -5.0
+        lower, upper = bounds if bounds is not None else (np.array([-5.,-5.]),np.array([5.,5.]))
+        grid.info.width, grid.info.height = np.ceil((upper-lower)/grid.info.resolution).astype(int).tolist()
+        grid.info.origin.position.x, grid.info.origin.position.y = map(float, lower)
         grid.info.origin.orientation.w = 1.0
-        grid.data = [0] * (200 * 200)
+        grid.data = [0] * (grid.info.width * grid.info.height)
         self.map_pub.publish(grid)
 
     def raw_callback(self, command):
@@ -306,13 +319,16 @@ def main():
     output = args.output or Path(tempfile.mkdtemp(prefix='access-controller-smoke-'))
     output.mkdir(parents=True, exist_ok=True)
     print(f'Actual Humble controller integration logs: {output}', flush=True)
+    np.savetxt(output / 'environment.csv', synthetic_environment_path(),
+               delimiter=',', header='x,y,yaw', comments='')
     rclpy.init()
     plant = Plant()
     reports = []
     config = experiment.default_config()
     try:
         for profile, conditions in (
-            ('nominal', ['E1_lateral', 'E1_orientation_nominal', 'E2_environment']),
+            ('nominal', ['E1_lateral', 'E1_orientation_nominal']),
+            ('environment', ['E2_environment']),
             ('half', ['E1_orientation_half']),
             ('quarter', ['E1_orientation_quarter']),
         ):
@@ -324,7 +340,7 @@ def main():
                                  'DWB.trajectory_generator_name', 'DWB.max_vel_y', 'VP_SCALED.use_uniform_velocity_scaling']
                 response = service(plant, GetParameters, '/controller_server/get_parameters', request)
                 assert list(response.values[0].string_array_value) == list(experiment.CONTROLLERS)
-                assert not response.values[1].bool_value  # ECPP experiment 2 baseline.
+                assert response.values[1].bool_value == (profile == 'environment')
                 assert response.values[4].bool_value
                 assert response.values[2].string_value == 'dwb_plugins::LimitedAccelGenerator'
                 assert response.values[3].double_value == .22

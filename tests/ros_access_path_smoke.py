@@ -36,21 +36,24 @@ def main():
             executable=command_line.read_bytes().split(b'\0')[0].decode()
         except (OSError, UnicodeError):
             continue
-        if Path(executable).name in ('map_server','planner_server','lifecycle_manager','static_transform_publisher'):
+        if Path(executable).name in ('map_server','planner_server','smoother_server','lifecycle_manager','static_transform_publisher'):
             lingering.append(executable)
     assert not lingering, f'Path generator left node processes alive: {lingering}'
     route=args.output/'route/E2_environment.csv'
     data=np.loadtxt(route,delimiter=',',skiprows=1)
     assert len(data)>10 and np.isfinite(data).all()
     metadata=json.loads((route.parent/'path_metadata.json').read_text())
-    assert metadata['planner']=='NavFn' and metadata['smoothing']['method']=='elastic'
+    assert metadata['planner']=='NavFn' and metadata['smoothing']['method']=='nav2_simple_smoother'
     assert metadata['costmap_ready_before_goal']
     raw=np.loadtxt(route.parent/'navfn_positions.csv',delimiter=',',skiprows=1)
     np.testing.assert_allclose(data[[0,-1],:2],raw[[0,-1]],atol=1e-9)
     # The obstacle must force a detour, and headings must follow the saved positions.
     assert np.max(np.abs(data[:,1]-2.0))>.4
-    direction=np.gradient(data[:,:2],axis=0)
-    np.testing.assert_allclose(data[:,2],np.arctan2(direction[:,1],direction[:,0]),atol=1e-9)
+    sys.path.insert(0,str(ROOT/'scripts'))
+    from dwvp_access_path import tangent_path
+    np.testing.assert_allclose(data,tangent_path(data[:,:2],.10),atol=1e-9)
+    assert metadata['smoother_action_completed']
+    assert (route.parent/'smoother_server_runtime.yaml').exists()
     assert (route.parent/'preview.png').stat().st_size>0
     spec=importlib.util.spec_from_file_location('experiment',ROOT/'scripts/dwvp_access_experiment.py')
     experiment=importlib.util.module_from_spec(spec);spec.loader.exec_module(experiment)
@@ -60,7 +63,7 @@ def main():
     np.testing.assert_allclose(path,data)
     np.testing.assert_allclose(experiment.start_pose(manifest,trial),[.6,2.,0.])
     (args.output/'report.json').write_text(json.dumps({'physical_trials':0,'path_samples':len(path),
-        'planned_trials':len(manifest['trials']),'planner':'NavFn','smoothing':'elastic',
+        'planned_trials':len(manifest['trials']),'planner':'NavFn','smoothing':'nav2_simple_smoother',
         'tangent_yaw_verified':True,'node_shutdown_verified':True,'costmap_ready_before_goal':True,
         'status':'synthetic_pass'},indent=2)+'\n')
 

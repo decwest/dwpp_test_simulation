@@ -13,7 +13,8 @@ from PIL import Image
 import rclpy
 import yaml
 
-from ros_access_controller_smoke import Plant, spin_for, spin_until, controller_stack
+from ros_access_controller_smoke import (Plant, spin_for, spin_until, controller_stack,
+                                         synthetic_environment_path)
 from ros_access_end_to_end_smoke import run_while_spinning
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -57,8 +58,9 @@ def main():
     configfile = out / 'synthetic_config.yaml'
     configfile.write_text(yaml.safe_dump(config))
     route = out / 'E2_environment.csv'
-    x = np.linspace(0, .8, 41); y = .08*np.sin(np.pi*x/.8)
-    np.savetxt(route, np.c_[x, y, np.arctan2(np.gradient(y), np.gradient(x))],
+    # Use the same representative E2 arc as the controller/recorder checks;
+    # keep the author's short E1 geometry and all workflow assertions unchanged.
+    np.savetxt(route, synthetic_environment_path(),
                delimiter=',', header='x,y,yaw', comments='')
     Image.fromarray(np.full((200, 200), 254, dtype=np.uint8)).save(out / 'map.pgm')
     mapfile = out / 'map.yaml'

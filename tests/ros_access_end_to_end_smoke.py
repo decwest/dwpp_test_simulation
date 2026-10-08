@@ -68,7 +68,8 @@ def main():
     config = experiment.default_config()
     try:
         for profile, conditions in (
-            ('nominal', ['E1_lateral', 'E1_orientation_nominal', 'E2_environment']),
+            ('nominal', ['E1_lateral', 'E1_orientation_nominal']),
+            ('environment', ['E2_environment']),
             ('half', ['E1_orientation_half']),
             ('quarter', ['E1_orientation_quarter']),
         ):
@@ -96,6 +97,12 @@ def main():
                     report=experiment.summarize(session)
                     trial=next(t for t in report['trials'] if t['trial_id']==trial_id)
                     assert trial['success'] and trial['fresh_pose_samples']>30 and not trial['data_errors'], trial
+                    if condition == 'E2_environment':
+                        window = config['conditions'][condition]['evaluation']
+                        length = experiment.arclength(synthetic_environment_path()[:, :2])[-1]
+                        assert trial['evaluation_start_m'] == window['start_m'], trial
+                        assert abs(trial['evaluation_end_m'] - (length - window['goal_margin_m'])) < 1.e-9, trial
+                        assert trial['evaluation_complete'], trial
                     commands=report['command_diagnostics'][trial_id]
                     assert commands['constraint_total_samples']>10, commands
                     assert commands['constraint_total_samples']==commands['constraint_evaluable_samples']+commands['constraint_unknown_samples'], commands
