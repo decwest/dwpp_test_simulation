@@ -8,11 +8,11 @@ from access_smoke_outcomes import (
 from test_access_batch import endpoint_miss, write_success
 
 
-@pytest.fixture
-def completed_session(tmp_path):
+@pytest.fixture(params=['E1_orientation_half', 'E1_orientation_quarter'])
+def completed_session(tmp_path, request):
     session = tmp_path/'session'
     manifest = experiment.prepare(session, ROOT/'params/hsrb_dwvp_access_params.yaml',
-        current_start=[0, 0, 0], conditions=['E1_orientation_quarter'], repeats=[1])
+        current_start=[0, 0, 0], conditions=[request.param], repeats=[1])
     for trial in manifest['trials']:
         folder = write_success(session, trial)
         result = dict(status='succeeded', success=True, action_status=4,
@@ -56,9 +56,14 @@ def test_expected_case_rejects_invalid_failure(completed_session, damage):
 
 
 @pytest.mark.parametrize('task,controller', [
-    ('E1_orientation_half', 'VP_CLIP'), ('E1_orientation_nominal', 'VP_CLIP'),
+    ('E1_lateral', 'DWVP'), ('E1_lateral', 'DWPP'),
+    ('E1_orientation_nominal', 'VP_CLIP'),
+    ('E1_orientation_nominal', 'VP_SCALED'), ('E1_orientation_nominal', 'DWVP'),
+    ('E1_orientation_half', 'VP_SCALED'), ('E1_orientation_half', 'DWVP'),
     ('E1_orientation_quarter', 'VP_SCALED'), ('E1_orientation_quarter', 'DWVP'),
-    ('E2_environment', 'DWB'),
+    ('E2_environment', 'DWVP'), ('E2_environment', 'DWPP'),
+    ('E2_environment', 'RPP'), ('E2_environment', 'MPPI'), ('E2_environment', 'DWB'),
+    ('E2_environment', 'VP_CLIP'),
 ])
 def test_other_cases_still_require_success(completed_session, task, controller):
     session, manifest, trial = completed_session

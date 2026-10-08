@@ -23,7 +23,8 @@ from lifecycle_msgs.msg import Transition
 
 from ros_access_controller_smoke import (Plant, spin_for, spin_until, controller_stack,
                                          synthetic_environment_path, check_acceleration)
-from access_smoke_outcomes import assert_recorded_outcome, assert_retry_bookkeeping
+from access_smoke_outcomes import (
+    EXPECTED_ENDPOINT_CASES, assert_recorded_outcome, assert_retry_bookkeeping)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -146,7 +147,7 @@ def main():
         retry = assert_retry_bookkeeping(session, output/'expected_endpoint_retry')
         (output/'report.json').write_text(json.dumps({'purpose':'Synthetic controller and recorder integration only',
             'physical_trials':0,'start_pose_rejection':True,'unassigned_rejection':True,
-            'expected_endpoint_case':['E1_orientation_quarter','VP_CLIP'], 'retry_bookkeeping':retry,
+            'expected_endpoint_cases':EXPECTED_ENDPOINT_CASES, 'retry_bookkeeping':retry,
             'half_acceleration':acceleration_reports['half'],
             'quarter_acceleration':acceleration_reports['quarter'],'summary':report},indent=2)+'\n')
         print('PASS: all seven controllers, assigned conditions, half/quarter acceleration, timing, recorder and summary',flush=True)
