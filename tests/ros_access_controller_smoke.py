@@ -337,12 +337,16 @@ def main():
             with controller_stack(plant, materialized, output / profile):
                 request = GetParameters.Request()
                 request.names = ['controller_plugins', 'MPPI.PathAlignCritic.use_path_orientations',
-                                 'DWB.trajectory_generator_name', 'DWB.max_vel_y', 'VP_SCALED.use_uniform_velocity_scaling']
+                                 'DWB.trajectory_generator_name', 'DWB.max_vel_y',
+                                 'VP_SCALED.use_uniform_velocity_scaling', 'DWB.sim_time']
                 response = service(plant, GetParameters, '/controller_server/get_parameters', request)
                 assert list(response.values[0].string_array_value) == list(experiment.CONTROLLERS)
                 assert response.values[1].bool_value == (profile == 'environment')
                 assert response.values[4].bool_value
-                assert response.values[2].string_value == 'dwb_plugins::LimitedAccelGenerator'
+                generator = ('LimitedAccelGenerator' if profile == 'environment'
+                             else 'StandardTrajectoryGenerator')
+                assert response.values[2].string_value == 'dwb_plugins::' + generator
+                assert response.values[5].double_value == (8. if profile == 'environment' else 1.7)
                 assert response.values[3].double_value == .22
                 action = ActionClient(plant, FollowPath, '/follow_path')
                 spin_until(plant, action.server_is_ready, 10.0)
