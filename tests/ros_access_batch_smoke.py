@@ -16,6 +16,7 @@ import yaml
 from ros_access_controller_smoke import (Plant, spin_for, spin_until, controller_stack,
                                          synthetic_environment_path)
 from ros_access_end_to_end_smoke import run_while_spinning
+from access_smoke_outcomes import assert_recorded_outcome, assert_retry_bookkeeping
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scripts'))
@@ -72,14 +73,19 @@ def main():
         session = out / 'session'
         run_while_spinning(plant, [sys.executable, str(ROOT/'scripts/dwvp_access_experiment.py'),
             'prepare', '--output', str(session), '--params', str(params), '--config', str(configfile),
-            '--environment-path', str(route), '--start-from-current'] +
-            (['--bidirectional', '--repeats', '1'] if args.bidirectional else []), out/'capture.log', 30.)
+            '--environment-path', str(route), '--start-from-current', '--repeats', '1'] +
+            (['--bidirectional'] if args.bidirectional else []), out/'capture.log', 30.)
         manifest = json.loads((session/'manifest.json').read_text())
         assert (session/'start_capture.json').is_file()
         for name in experiment.CONDITIONS[:-1]:
             np.testing.assert_allclose(manifest['starts'][name]['map_pose'], [0, 0, 0], atol=1e-5)
         command = [sys.executable, str(ROOT/'scripts/dwvp_access_batch.py'),
                    '--session', str(session), '--map', str(mapfile), '--repeats', '1']
+        # Exercise the author's explicit continuation workflow for the quarter
+        # VP_CLIP endpoint case. Outcome assertions below still reject failures
+        # for every other case; no recorder or controller criterion is relaxed.
+        if args.all_methods:
+            command += ['--continue-on-endpoint-failure']
         before = plant.raw_count
         run_while_spinning(plant, command + ['--dry-run'], out/'dry_run.log', 30.)
         assert plant.raw_count == before and not (session/'runs').exists()
@@ -91,7 +97,17 @@ def main():
         assert (len(status['alignments']) == expected_trials-1 if args.bidirectional
                 else len(status['returns']) == expected_trials)
         report = experiment.summarize(session)
-        assert report['recorded'] == expected_trials and all(t['success'] for t in report['trials'])
+        assert report['recorded'] == expected_trials
+        selected = [t for t in manifest['trials'] if t['repeat'] == 1]
+        failures = []
+        for trial in selected:
+            result = assert_recorded_outcome(session, manifest, trial)
+            summary = next(t for t in report['trials'] if t['trial_id'] == trial['id'])
+            assert summary['success'] == result['success'], summary
+            if not result['success']:
+                failures.append(trial['id'])
+        assert status['failed_trials'] == failures, status
+        retry = assert_retry_bookkeeping(session, out/'expected_endpoint_retry')
         transfers = folder / ('alignments' if args.bidirectional else 'returns')
         assert len(list(transfers.glob('*/result.json'))) == (expected_trials-1 if args.bidirectional else expected_trials)
         for resultfile in transfers.glob('*/result.json'):
@@ -188,6 +204,8 @@ def main():
             assert abs(plant.applied.angular.z) < 1e-6
             print(f'PASS: {scenario} cancels goal, stops motion and does not start next trial', flush=True)
         (out/'report.json').write_text(json.dumps(dict(physical_trials=0, synthetic_trials=expected_trials,
+            expected_endpoint_case=['E1_orientation_quarter','VP_CLIP'],
+            failed_trial_ids=failures, retry_bookkeeping=retry,
             methods=sorted({t['controller'] for t in manifest['trials']}),
             bidirectional=args.bidirectional, synthetic_positioning=expected_trials-1 if args.bidirectional else expected_trials,
             resumed_reverse_trial=True, resume_preserves_success=True, completed_resume_no_goals=True,

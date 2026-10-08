@@ -23,6 +23,7 @@ from lifecycle_msgs.msg import Transition
 
 from ros_access_controller_smoke import (Plant, spin_for, spin_until, controller_stack,
                                          synthetic_environment_path, check_acceleration)
+from access_smoke_outcomes import assert_recorded_outcome, assert_retry_bookkeeping
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -61,7 +62,9 @@ def main():
     session = output/'session'
     route = output/'environment.csv'
     np.savetxt(route, synthetic_environment_path(), delimiter=',', header='x,y,yaw', comments='')
-    manifest = experiment.prepare(session, params, [0.,0.,0.], route)
+    # Freeze only the repeat exercised below so failed-only retry selection can
+    # validate a completed session, with no invented records for unrun repeats.
+    manifest = experiment.prepare(session, params, [0.,0.,0.], route, repeats=[1])
     rclpy.init()
     plant = Plant()
     acceleration_reports = {'half': {}, 'quarter': {}}
@@ -96,7 +99,9 @@ def main():
                         '--session',str(session),'--trial',trial_id],output/f'{trial_id}_recorder.log',160.)
                     report=experiment.summarize(session)
                     trial=next(t for t in report['trials'] if t['trial_id']==trial_id)
-                    assert trial['success'] and trial['fresh_pose_samples']>30 and not trial['data_errors'], trial
+                    result = assert_recorded_outcome(session, manifest, selected)
+                    assert trial['success'] == result['success'], trial
+                    assert trial['fresh_pose_samples']>30 and not trial['data_errors'], trial
                     if condition == 'E2_environment':
                         window = config['conditions'][condition]['evaluation']
                         length = experiment.arclength(synthetic_environment_path()[:, :2])[-1]
@@ -124,12 +129,13 @@ def main():
                     assert abs(timing['raw_minus_successful_timing_samples'])<=3, timing
                     group=next(g for g in report['groups'] if g['task']==condition and g['controller']==controller)
                     # Quality accounting remains visible; flags do not discard observations.
-                    eligible = (trial['invalid_after_warmup_samples']==0
+                    eligible = (trial['success'] and trial['invalid_after_warmup_samples']==0
                                 and trial['missing_command_prefix_s'] is not None
                                 and trial['missing_command_prefix_s']<=1/manifest['control_frequency_hz'])
-                    assert group['recorded']==1 and group['succeeded']==1, group
+                    assert group['recorded']==1 and group['succeeded']==int(trial['success']), group
+                    assert group['failed_or_incomplete']==int(not trial['success']), group
                     assert group['valid_successes']==int(eligible), group
-                    assert group['travel_time_s_n']==1, group
+                    assert group['travel_time_s_n']==int(trial['success']), group
                     assert group['constraint_violation_pct_n']==1, group
                     assert group['compute_time_mean_ms_n']==1, group
                     if profile in acceleration_reports:
@@ -137,8 +143,10 @@ def main():
                         assert trial['acceleration_scale'] == config['conditions'][condition]['acceleration_scale']
                     print(f'Actual recorder verified: {trial_id}; quality-qualified={eligible}', flush=True)
                 spin_for(plant, 2.3)
-        (output/'report.json').write_text(json.dumps({'purpose':'Synthetic integration on uncommitted working tree only',
+        retry = assert_retry_bookkeeping(session, output/'expected_endpoint_retry')
+        (output/'report.json').write_text(json.dumps({'purpose':'Synthetic controller and recorder integration only',
             'physical_trials':0,'start_pose_rejection':True,'unassigned_rejection':True,
+            'expected_endpoint_case':['E1_orientation_quarter','VP_CLIP'], 'retry_bookkeeping':retry,
             'half_acceleration':acceleration_reports['half'],
             'quarter_acceleration':acceleration_reports['quarter'],'summary':report},indent=2)+'\n')
         print('PASS: all seven controllers, assigned conditions, half/quarter acceleration, timing, recorder and summary',flush=True)
