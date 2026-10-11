@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare 80 fixed-path trials, record one ROS trial, and summarize completed data.
+"""Prepare fixed-path trials (65 E1 and 25 E2 by default), record one ROS trial, and summarize completed data.
 
 Offline preparation and analysis do not import ROS. ``prepare --start-from-current``
 observes localization without motion. ``run`` sends one FollowPath goal; the batch
@@ -100,8 +100,13 @@ def arclength(xy):
 
 
 CONTROLLERS = ('RPP', 'DWPP', 'MPPI', 'DWB', 'VP_CLIP', 'VP_SCALED', 'DWVP')
-CONDITIONS = ('E1_lateral', 'E1_orientation_nominal', 'E1_orientation_half',
-              'E1_orientation_quarter', 'E2_environment')
+LEGACY_CONDITIONS = ('E1_lateral', 'E1_orientation_nominal', 'E1_orientation_half',
+                     'E1_orientation_quarter', 'E2_environment')
+RESPONSE_CONDITIONS = ('E1_response_L0p11_T0p5', 'E1_response_L0p11_T1p5',
+                       'E1_response_L0p33_T0p5', 'E1_response_L0p33_T1p5')
+E1_CONDITIONS = (*RESPONSE_CONDITIONS, *LEGACY_CONDITIONS[1:-1])
+DEFAULT_CONDITIONS = (*E1_CONDITIONS, 'E2_environment')
+CONDITIONS = ('E1_lateral', *DEFAULT_CONDITIONS)
 
 
 def default_config():
@@ -166,7 +171,7 @@ def render_parameters(params, config, condition=None):
                 ctrl.update({f'acc_lim_{axis}': accel[i], f'decel_lim_{axis}': decel[i]})
         if name == 'MPPI':
             ctrl.update(vx_max=hi[0], vx_min=lo[0], vy_max=hi[1], wz_max=hi[2], model_dt=1.0/c['control_frequency_hz'])
-    # Condition-scoped overrides leave all E1 renders byte-for-byte equivalent.
+    # Apply condition tuning after common defaults, including the fixed E1a grid.
     if condition:
         def merge(target, updates):
             for key, value in updates.items():
@@ -203,7 +208,7 @@ def canonical_path(name, config=None):
         if not np.isfinite(length) or length <= 0:
             raise ValueError('Path dimensions must be positive and finite')
         return np.linspace(0, length, max(2, int(math.ceil(length / spacing)) + 1))
-    if name == 'E1_lateral':
+    if name == 'E1_lateral' or name in RESPONSE_CONDITIONS:
         x = samples(settings['length_m'])
         return np.c_[x, np.zeros(len(x)), np.zeros(len(x))]
     if name in ('E1_orientation_nominal', 'E1_orientation_half', 'E1_orientation_quarter'):
@@ -290,19 +295,20 @@ def prepare(output, params, origin=None, environment_path=None, seed=20261004, c
             *, current_start=None, bidirectional=False, conditions=None, repeats=None):
     import yaml
     config = yaml.safe_load(Path(config_file).read_text()) if config_file else default_config()
+    available = tuple(name for name in CONDITIONS if name in config['conditions'])
     if current_start is not None:
         if origin is not None:
             raise ValueError('Choose --origin or a measured current start, not both')
         # E1 conditions share the measured robot start, not their path origins.
         origins = {name: origin_from_start(current_start, config['conditions'][name]['start_pose'])
-                   for name in CONDITIONS if name != 'E2_environment'}
-        origin = origins['E1_lateral']
+                   for name in available if name != 'E2_environment'}
+        origin = next(iter(origins.values()))
     else:
         origins = {}
-    selected_conditions = [c for item in (conditions or CONDITIONS) for c in
-                           (CONDITIONS[:-1] if item == 'E1' else [item])]
+    selected_conditions = [c for item in (conditions or DEFAULT_CONDITIONS) for c in
+                           (E1_CONDITIONS if item == 'E1' else [item])]
     selected_repeats = list(range(1, 6)) if repeats is None else sorted(set(repeats))
-    if not selected_conditions or not set(selected_conditions) <= set(CONDITIONS):
+    if not selected_conditions or not set(selected_conditions) <= set(available):
         raise ValueError('Unknown or empty condition selection')
     if not selected_repeats or not set(selected_repeats) <= set(range(1, 6)):
         raise ValueError('Repeats must be in 1..5')
@@ -325,7 +331,7 @@ def prepare(output, params, origin=None, environment_path=None, seed=20261004, c
         raise ValueError('Metric age, footprint radius and near range must be positive')
     if not 0 <= config['metrics']['maximum_unknown_command_pct'] <= 100:
         raise ValueError('Unknown command threshold must be between 0 and 100 percent')
-    for name in CONDITIONS:
+    for name in available:
         window = config['conditions'][name]['evaluation']
         if window['start_m'] < 0 or window['goal_margin_m'] < 0:
             raise ValueError('Evaluation start and goal margin must be nonnegative')
@@ -349,7 +355,7 @@ def prepare(output, params, origin=None, environment_path=None, seed=20261004, c
     rendered = render_parameters(params, config)
     if origin is not None and (len(origin) != 3 or not np.isfinite(origin).all()):
         raise ValueError('Origin must be a finite x,y,yaw pose')
-    routes = {name: validate_path(canonical_path(name, config)) for name in CONDITIONS if name != 'E2_environment'}
+    routes = {name: validate_path(canonical_path(name, config)) for name in available if name != 'E2_environment'}
     if environment_path is not None:
         routes['E2_environment'] = validate_path(np.loadtxt(environment_path, delimiter=',', skiprows=1))
     for name, route in routes.items():
@@ -363,12 +369,12 @@ def prepare(output, params, origin=None, environment_path=None, seed=20261004, c
     (output / 'experiment_config.yaml').write_text(yaml.safe_dump(config, sort_keys=False))
     shutil.copy2(params, output / 'params_template.yaml')
     parameter_sets = {}
-    for name in CONDITIONS:
+    for name in available:
         filename = f'nav2_params_{name}.yaml'
         (output / filename).write_text(yaml.safe_dump(render_parameters(params, config, name), sort_keys=False))
         parameter_sets[name] = {'file': filename, 'sha256': digest(output / filename)}
     paths, starts = {}, {}
-    for name in CONDITIONS:
+    for name in available:
         if name not in routes:
             paths[name] = {'file': None, 'status': 'needs_navfn_environment_route', 'frame': 'map'}
             starts[name] = {'map_pose': None}

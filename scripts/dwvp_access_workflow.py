@@ -602,7 +602,7 @@ def main():
     e.add_argument('--config', type=Path, help='Optional experimental condition configuration')
     e.add_argument('--conditions', nargs='+', choices=['E1', *experiment.CONDITIONS[:-1]],
                    help='Default: all E1 conditions; E2 requires the separate map-fixed workflow')
-    e.add_argument('--repeats', nargs='+', type=int, choices=range(1, 6), help='Default: all five repeats, 55 E1 legs')
+    e.add_argument('--repeats', nargs='+', type=int, choices=range(1, 6), help='Default: all five repeats, 65 E1 legs')
     for command in (p, e):
         command.add_argument('--no-rviz', action='store_true', help='Do not start RViz (e.g. headless verification)')
         command.add_argument('--no-joy', action='store_true', help='Do not start the F310 driver')

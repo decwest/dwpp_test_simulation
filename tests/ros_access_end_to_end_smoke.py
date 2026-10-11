@@ -65,7 +65,7 @@ def main():
     np.savetxt(route, synthetic_environment_path(), delimiter=',', header='x,y,yaw', comments='')
     # Freeze only the repeat exercised below so failed-only retry selection can
     # validate a completed session, with no invented records for unrun repeats.
-    manifest = experiment.prepare(session, params, [0.,0.,0.], route, repeats=[1])
+    manifest = experiment.prepare(session, params, [0.,0.,0.], route, repeats=[1], conditions=experiment.CONDITIONS)
     rclpy.init()
     plant = Plant()
     acceleration_reports = {'half': {}, 'quarter': {}}
@@ -76,6 +76,7 @@ def main():
             ('environment', ['E2_environment']),
             ('half', ['E1_orientation_half']),
             ('quarter', ['E1_orientation_quarter']),
+            *((name, [name]) for name in experiment.RESPONSE_CONDITIONS),
         ):
             frozen = session / manifest['parameter_sets'][conditions[0]]['file']
             with controller_stack(plant, frozen, output / profile):
@@ -103,6 +104,14 @@ def main():
                     result = assert_recorded_outcome(session, manifest, selected)
                     assert trial['success'] == result['success'], trial
                     assert trial['fresh_pose_samples']>30 and not trial['data_errors'], trial
+                    if condition in experiment.RESPONSE_CONDITIONS:
+                        assert trial['lateral_time_constant_s'] > 0, trial
+                        assert trial['tau_fit_samples'] > 5 and trial['tau_fit_s'] is not None, trial
+                        assert trial['settling_2pct_time_s'] is not None, trial
+                        assert trial['settling_5pct_time_s'] is not None, trial
+                        runtime = yaml.safe_load(snapshots['controller_server'].read_text())
+                        actual = experiment.flatten_parameters(runtime['/controller_server']['ros__parameters'])
+                        assert actual['DWVP.lateral_time_constant'] == trial['lateral_time_constant_s']
                     if condition == 'E2_environment':
                         window = config['conditions'][condition]['evaluation']
                         length = experiment.arclength(synthetic_environment_path()[:, :2])[-1]
@@ -146,7 +155,8 @@ def main():
                 spin_for(plant, 2.3)
         retry = assert_retry_bookkeeping(session, output/'expected_endpoint_retry')
         (output/'report.json').write_text(json.dumps({'purpose':'Synthetic controller and recorder integration only',
-            'physical_trials':0,'start_pose_rejection':True,'unassigned_rejection':True,
+            'physical_trials':0,'response_conditions':list(experiment.RESPONSE_CONDITIONS),
+            'response_runtime_parameters_verified':True,'start_pose_rejection':True,'unassigned_rejection':True,
             'expected_endpoint_cases':EXPECTED_ENDPOINT_CASES, 'retry_bookkeeping':retry,
             'half_acceleration':acceleration_reports['half'],
             'quarter_acceleration':acceleration_reports['quarter'],'summary':report},indent=2)+'\n')
@@ -161,7 +171,8 @@ def check_rejections(plant, session, output):
                              ('E1_lateral_MPPI_r1', 'unassigned'),
                              ('E1_orientation_half_DWVP_r1', 'Runtime parameter mismatch'),
                              ('E1_orientation_quarter_DWVP_r1', 'Runtime parameter mismatch'),
-                             ('E1_orientation_quarter_DWB_r1', 'unassigned')]:
+                             ('E1_orientation_quarter_DWB_r1', 'unassigned'),
+                             ('E1_response_L0p11_T0p5_DWVP_r1', 'Runtime parameter mismatch')]:
         rejected = output / f'rejected_{trial_id}.log'
         try:
             run_while_spinning(plant,[sys.executable,str(ROOT/'scripts/dwvp_access_experiment.py'),'preflight',

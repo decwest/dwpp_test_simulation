@@ -41,7 +41,7 @@ def main():
                                           mode='trinary', negate=0, occupied_thresh=.65, free_thresh=.196)))
     session = out/'session'
     manifest = experiment.prepare(session, ROOT/'params/hsrb_dwvp_access_params.yaml',
-        current_start=[0,0,0], config_file=settings, bidirectional=True, conditions=['E1'], repeats=[1])
+        current_start=[0,0,0], config_file=settings, bidirectional=True, conditions=experiment.LEGACY_CONDITIONS[:-1], repeats=[1])
     frozen = {str(p.relative_to(session)): p.read_bytes() for p in session.rglob('*') if p.is_file()}
     command = [sys.executable, str(ROOT/'scripts/dwvp_access_batch.py'), '--session', str(session),
                '--map', str(map_file), '--start-from-current']

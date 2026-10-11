@@ -17,8 +17,8 @@ spec.loader.exec_module(experiment)
 
 def test_balanced_reproducible_80_trial_schedule(tmp_path):
     params = ROOT / 'params/hsrb_dwvp_access_params.yaml'
-    one = experiment.prepare(tmp_path / 'one', params)
-    two = experiment.prepare(tmp_path / 'two', params)
+    one = experiment.prepare(tmp_path / 'one', params, conditions=experiment.LEGACY_CONDITIONS)
+    two = experiment.prepare(tmp_path / 'two', params, conditions=experiment.LEGACY_CONDITIONS)
     assert len(one['trials']) == len({t['id'] for t in one['trials']}) == 80
     assert one['trials'] == two['trials']
     counts = Counter((t['task'], t['controller']) for t in one['trials'])
@@ -29,7 +29,7 @@ def test_balanced_reproducible_80_trial_schedule(tmp_path):
         'E1_orientation_half': 15, 'E1_orientation_quarter': 15, 'E2_environment': 25}
     assert {k[1] for k in counts} == set(experiment.CONTROLLERS)
     for repeat in range(1, 6):
-        for task in experiment.CONDITIONS:
+        for task in experiment.LEGACY_CONDITIONS:
             block = [t for t in one['trials'] if t['repeat'] == repeat and t['task'] == task]
             assert {t['controller'] for t in block} == set(experiment.default_config()['conditions'][task]['methods'])
     assert one['paths']['E2_environment']['file'] is None
@@ -52,7 +52,7 @@ def test_condition_geometry_and_configurable_start():
 
 def test_freezes_map_origin_and_rejects_modified_inputs(tmp_path):
     params = ROOT / 'params/hsrb_dwvp_access_params.yaml'
-    experiment.prepare(tmp_path / 'one', params, [3., 4., np.pi / 2])
+    experiment.prepare(tmp_path / 'one', params, [3., 4., np.pi / 2], conditions=experiment.LEGACY_CONDITIONS)
     _, _, path = experiment.load_trial(tmp_path / 'one', 'E1_orientation_nominal_DWVP_r1')
     np.testing.assert_allclose(path[0], [3., 4., np.pi / 2])
     np.testing.assert_allclose(path[-1, :2], [3., 6.5])
@@ -64,14 +64,14 @@ def test_freezes_map_origin_and_rejects_modified_inputs(tmp_path):
 
 
 def test_unset_origin_never_runs(tmp_path):
-    experiment.prepare(tmp_path / 'one', ROOT / 'params/hsrb_dwvp_access_params.yaml')
+    experiment.prepare(tmp_path / 'one', ROOT / 'params/hsrb_dwvp_access_params.yaml', conditions=experiment.LEGACY_CONDITIONS)
     with pytest.raises(ValueError, match='origin'):
         experiment.load_trial(tmp_path / 'one', 'E1_lateral_DWPP_r1')
 
 
 def test_status_reports_unready_and_incomplete_trials_without_writing(tmp_path):
     root = tmp_path / 'session'
-    experiment.prepare(root, ROOT / 'params/hsrb_dwvp_access_params.yaml', [0, 0, 0])
+    experiment.prepare(root, ROOT / 'params/hsrb_dwvp_access_params.yaml', [0, 0, 0], conditions=experiment.LEGACY_CONDITIONS)
     before = set(root.rglob('*'))
     states = {r['trial']: r['status'] for r in experiment.session_status(root)}
     assert len(states) == 80 and states['E2_environment_RPP_r1'] == 'needs_route'
@@ -173,7 +173,7 @@ def test_invalid_reference_rejected():
 
 def test_failed_runs_remain_in_counts_and_never_get_success_means(tmp_path):
     root = tmp_path / 'session'
-    experiment.prepare(root, ROOT / 'params/hsrb_dwvp_access_params.yaml', [0, 0, 0])
+    experiment.prepare(root, ROOT / 'params/hsrb_dwvp_access_params.yaml', [0, 0, 0], conditions=experiment.LEGACY_CONDITIONS)
     folder = root / 'runs/E1_lateral_DWPP_r1'
     folder.mkdir(parents=True)
     (folder / 'result.json').write_text(json.dumps({'status': 'timeout', 'success': False, 'duration_s': 120}))
@@ -277,7 +277,7 @@ def test_selected_controller_tuning_is_frozen(tmp_path, controller, field, value
 ])
 def test_summary_retains_prefix_and_rejects_stale_source(tmp_path, missing_prefix, source_age, expected_valid):
     root = tmp_path / 'session'
-    experiment.prepare(root, ROOT / 'params/hsrb_dwvp_access_params.yaml', [0, 0, 0])
+    experiment.prepare(root, ROOT / 'params/hsrb_dwvp_access_params.yaml', [0, 0, 0], conditions=experiment.LEGACY_CONDITIONS)
     folder = root / 'runs/E1_orientation_nominal_DWVP_r1'
     folder.mkdir(parents=True)
     (folder / 'result.json').write_text(json.dumps({'status': 'succeeded', 'success': True, 'duration_s': 1.,
@@ -299,21 +299,21 @@ def test_summary_retains_prefix_and_rejects_stale_source(tmp_path, missing_prefi
 
 def test_start_is_offset_and_transformed_not_reference_origin(tmp_path):
     root=tmp_path/'session'
-    experiment.prepare(root, ROOT/'params/hsrb_dwvp_access_params.yaml', [3,4,np.pi/2])
+    experiment.prepare(root, ROOT/'params/hsrb_dwvp_access_params.yaml', [3,4,np.pi/2], conditions=experiment.LEGACY_CONDITIONS)
     manifest,trial,path=experiment.load_trial(root,'E1_lateral_DWVP_r1')
     np.testing.assert_allclose(experiment.start_pose(manifest,trial),[2.5,4,np.pi/2])
     experiment.check_start_pose([2.5,4,np.pi/2],manifest,trial)
     with pytest.raises(RuntimeError,match='condition start'):
         experiment.check_start_pose(path[0],manifest,trial)
     with pytest.raises(FileExistsError):
-        experiment.prepare(root,ROOT/'params/hsrb_dwvp_access_params.yaml',[0,0,0])
+        experiment.prepare(root,ROOT/'params/hsrb_dwvp_access_params.yaml',[0,0,0], conditions=experiment.LEGACY_CONDITIONS)
 
 
 def test_environment_path_already_uses_map_coordinates(tmp_path):
     csv=tmp_path/'E2_environment.csv'
     csv.write_text('x,y,yaw\n3,4,1.5\n3,5,1.5\n')
     root=tmp_path/'session'
-    experiment.prepare(root,ROOT/'params/hsrb_dwvp_access_params.yaml',[20,30,.2],csv)
+    experiment.prepare(root,ROOT/'params/hsrb_dwvp_access_params.yaml',[20,30,.2],csv, conditions=experiment.LEGACY_CONDITIONS)
     manifest,trial,path=experiment.load_trial(root,'E2_environment_DWVP_r1')
     np.testing.assert_allclose(path,[[3,4,1.5],[3,5,1.5]])
     np.testing.assert_allclose(experiment.start_pose(manifest,trial),path[0])
@@ -337,7 +337,7 @@ def test_nominal_tuning_is_rendered_for_all_methods(tmp_path):
 
 
 def test_config_changes_rejected(tmp_path):
-    root=tmp_path/'s';experiment.prepare(root,ROOT/'params/hsrb_dwvp_access_params.yaml',[0,0,0])
+    root=tmp_path/'s';experiment.prepare(root,ROOT/'params/hsrb_dwvp_access_params.yaml',[0,0,0], conditions=experiment.LEGACY_CONDITIONS)
     with (root/'experiment_config.yaml').open('a') as f:f.write('\n# changed\n')
     with pytest.raises(ValueError,match='changed'):
         experiment.load_trial(root,'E1_lateral_DWVP_r1')
@@ -346,7 +346,7 @@ def test_config_changes_rejected(tmp_path):
 def make_attempt(tmp_path,condition='E1_lateral',controller='DWVP',poses=None):
     root=tmp_path/'s'
     csv=tmp_path/'e2.csv';csv.write_text('x,y,yaw\n0,0,0\n2,0,0\n')
-    experiment.prepare(root,ROOT/'params/hsrb_dwvp_access_params.yaml',[0,0,0],csv)
+    experiment.prepare(root,ROOT/'params/hsrb_dwvp_access_params.yaml',[0,0,0],csv, conditions=experiment.LEGACY_CONDITIONS)
     name=f'{condition}_{controller}_r1';folder=root/'runs'/name;folder.mkdir(parents=True)
     _,_,path=experiment.load_trial(root,name)
     np.savetxt(folder/'reference.csv',path,delimiter=',',header='x,y,yaw',comments='')
@@ -443,7 +443,7 @@ def test_environment_scan_speed_without_invented_survey_clearance(tmp_path):
 
 
 def test_incomplete_and_missing_files_remain_counted(tmp_path):
-    root=tmp_path/'s';experiment.prepare(root,ROOT/'params/hsrb_dwvp_access_params.yaml',[0,0,0])
+    root=tmp_path/'s';experiment.prepare(root,ROOT/'params/hsrb_dwvp_access_params.yaml',[0,0,0], conditions=experiment.LEGACY_CONDITIONS)
     (root/'runs/E1_lateral_DWPP_r1').mkdir(parents=True)
     report=experiment.summarize(root)
     assert report['recorded']==1 and report['pending']==79 and len(report['groups'])==16
@@ -496,8 +496,8 @@ def test_bad_laser_samples_are_missing_not_clear_space():
 
 def test_seed_changes_method_order_without_changing_paths(tmp_path):
     params=ROOT/'params/hsrb_dwvp_access_params.yaml'
-    one=experiment.prepare(tmp_path/'one',params,seed=1)
-    two=experiment.prepare(tmp_path/'two',params,seed=2)
+    one=experiment.prepare(tmp_path/'one',params,seed=1, conditions=experiment.LEGACY_CONDITIONS)
+    two=experiment.prepare(tmp_path/'two',params,seed=2, conditions=experiment.LEGACY_CONDITIONS)
     assert one['trials']!=two['trials']
     assert one['paths']==two['paths']
 
@@ -549,7 +549,7 @@ def test_constraint_percentage_invalid_raw_is_unknown(tmp_path,bad):
 
 def test_experiment_profiles_keep_goal_approach_enabled(tmp_path):
     root=tmp_path/'session'
-    experiment.prepare(root,ROOT/'params/hsrb_dwvp_access_params.yaml')
+    experiment.prepare(root,ROOT/'params/hsrb_dwvp_access_params.yaml', conditions=experiment.LEGACY_CONDITIONS)
     params=yaml.safe_load((root/'nav2_params.yaml').read_text())['controller_server']['ros__parameters']
     for name in ('DWVP','VP_CLIP','VP_SCALED'):
         assert params[name]['approach_velocity_scaling_dist']==.6
@@ -594,7 +594,7 @@ def test_acceleration_is_shared_by_controller_smoother_and_metrics(tmp_path, met
 @pytest.mark.parametrize('condition', ['E1_orientation_half', 'E1_orientation_quarter'])
 def test_unassigned_combination_and_wrong_profile_are_rejected(tmp_path, condition):
     root=tmp_path/'session'
-    manifest=experiment.prepare(root,ROOT/'params/hsrb_dwvp_access_params.yaml',[0,0,0])
+    manifest=experiment.prepare(root,ROOT/'params/hsrb_dwvp_access_params.yaml',[0,0,0], conditions=experiment.LEGACY_CONDITIONS)
     with pytest.raises(ValueError,match='unassigned'):
         experiment.load_trial(root,'E1_lateral_MPPI_r1')
     with pytest.raises(ValueError,match='unassigned'):
@@ -609,7 +609,7 @@ def test_unassigned_combination_and_wrong_profile_are_rejected(tmp_path, conditi
 
 def test_assignment_check_uses_frozen_config(tmp_path):
     root=tmp_path/'session'
-    manifest=experiment.prepare(root,ROOT/'params/hsrb_dwvp_access_params.yaml',[0,0,0])
+    manifest=experiment.prepare(root,ROOT/'params/hsrb_dwvp_access_params.yaml',[0,0,0], conditions=experiment.LEGACY_CONDITIONS)
     trial = next(t for t in manifest['trials'] if t['id']=='E1_lateral_DWVP_r1')
     trial['controller'] = 'MPPI'
     experiment.write_json(root/'manifest.json', manifest)

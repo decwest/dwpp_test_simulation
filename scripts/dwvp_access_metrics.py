@@ -15,11 +15,59 @@ COMMON_METRICS = ('eval_max_position_error_m', 'eval_mean_position_error_m',
 
 
 def transient_metrics(task):
+    if task.startswith('E1_response_'):
+        return ('crossing_m', 'lateral_convergence_time_s', 'settling_2pct_time_s',
+                'settling_5pct_time_s', 'tau_fit_s')
     if task == 'E1_lateral':
         return ('crossing_m',)
     if task in ('E1_orientation_nominal', 'E1_orientation_half', 'E1_orientation_quarter'):
         return ('transition_heading_lag_deg', 'post_transition_heading_overshoot_deg')
     return ()
+
+
+def lateral_response_metrics(times, errors, valid=None, *, complete=False):
+    """Action-relative response metrics, independent of the spatial error window.
+
+    Settling requires a completed action and two or more consecutive fresh
+    samples inside the fixed band through the end of the recording. An invalid
+    sample breaks that evidence. No interpolation or stale-gap filling is used.
+    The log fit matches simulator Test 1: .02 < |e| < .15 m, 0 <= t < 20 s,
+    more than five samples, and a negative slope.
+    """
+    times, errors = np.asarray(times, dtype=float), np.asarray(errors, dtype=float)
+    fresh = np.isfinite(times) & np.isfinite(errors) & (times >= 0)
+    if valid is not None:
+        fresh &= valid
+    monotonic = bool(np.isfinite(times).all() and np.all(np.diff(times) > 0))
+    out = dict(settling_2pct_band_m=.01, settling_5pct_band_m=.025,
+               settling_2pct_time_s=None, settling_5pct_time_s=None,
+               response_observation_end_s=float(times[-1]) if len(times) and np.isfinite(times[-1]) else None,
+               response_complete=bool(complete), response_invalid_samples=int((~fresh).sum()),
+               tau_fit_s=None, tau_fit_error_min_m=.02, tau_fit_error_max_m=.15,
+               tau_fit_time_limit_s=20., tau_fit_start_s=None, tau_fit_end_s=None,
+               tau_fit_samples=0, tau_fit_slope_per_s=None, tau_fit_r_squared=None)
+    if complete and monotonic:
+        for percent, band in ((2, .01), (5, .025)):
+            inside = fresh & (np.abs(errors) <= band)
+            if len(inside) and inside[-1]:
+                outside = np.flatnonzero(~inside)
+                first = int(outside[-1]+1) if len(outside) else 0
+                if len(inside)-first >= 2:
+                    out[f'settling_{percent}pct_time_s'] = float(times[first])
+    fit = fresh & (np.abs(errors) > .02) & (np.abs(errors) < .15) & (times < 20.)
+    out['tau_fit_samples'] = int(fit.sum())
+    if fit.any():
+        out.update(tau_fit_start_s=float(times[fit][0]), tau_fit_end_s=float(times[fit][-1]))
+    if fit.sum() > 5 and monotonic:
+        t, y = times[fit], np.log(np.abs(errors[fit]))
+        slope, intercept = np.polyfit(t, y, 1)
+        out['tau_fit_slope_per_s'] = float(slope)
+        if slope < 0:
+            out['tau_fit_s'] = float(-1./slope)
+        total = float(np.sum((y-y.mean())**2))
+        if total > 0:
+            out['tau_fit_r_squared'] = float(1.-np.sum((y-(slope*t+intercept))**2)/total)
+    return out
 
 
 def project_tracking(poses, path):
@@ -346,6 +394,8 @@ def summarize_session(session, tracking_errors):
                    final_yaw_error_rad=result.get('final_yaw_error_rad'), obstacle_near_mean_speed_m_s=None,
                    obstacle_near_samples=0, obstacle_near_missing_or_stale_samples=len(data) if trial['task']=='E2_environment' else 0, surveyed_min_clearance_m=None)
         row.update({key: None for key in COMMON_METRICS})
+        row.update({key: None for key in lateral_response_metrics([], [])})
+        row.update(fixed_lookahead_m=None, lateral_time_constant_s=None, response_distance_m=None)
         row.update(crossing_m=None, transition_heading_lag_deg=None, post_transition_heading_overshoot_deg=None,
                    evaluation_start_m=None, evaluation_end_m=None, evaluation_complete=False,
                    evaluation_samples=0, eval_duration_s=0., invalid_time_intervals=0)
@@ -355,6 +405,20 @@ def summarize_session(session, tracking_errors):
             if row['reference_policy'] != policy:
                 raise ValueError('Result reference policy differs from recorded geometry')
             condition = config['conditions'][trial['task']]
+            if trial['task'].startswith('E1_response_'):
+                frozen = yaml.safe_load((session/trial['params_file']).read_text())
+                controller = frozen['controller_server']['ros__parameters']['DWVP']
+                speed = controller['vp_translation_speed']
+                if speed <= 0:
+                    speed = min(controller['max_vel_x'], -controller['min_vel_x'],
+                                controller['max_vel_y'], -controller['min_vel_y'])
+                row.update(fixed_lookahead_m=controller['min_lookahead_dist'],
+                           lateral_time_constant_s=controller['lateral_time_constant'],
+                           response_distance_m=controller['lateral_time_constant']*speed)
+                direction = path[-1, :2]-path[0, :2]
+                direction /= np.linalg.norm(direction)
+                signed = (np.c_[data['x'], data['y']]-path[0, :2]) @ [-direction[1], direction[0]]
+                row.update(lateral_response_metrics(data['t'], signed, fresh, complete=row['success']))
             common_errors, projected, evaluation = tracking_metrics(
                 data['t'], np.c_[data['x'], data['y'], data['yaw']], path, condition,
                 initial_pose, fresh)
@@ -367,7 +431,7 @@ def summarize_session(session, tracking_errors):
                 row.update(position_rmse_m=float(np.sqrt(np.mean(e[:,0]**2))),position_max_m=float(e[:,0].max()),
                            yaw_rmse_rad=float(np.sqrt(np.mean(e[:,1]**2))),yaw_max_rad=float(e[:,1].max()))
                 row.update(yaw_rmse_deg=math.degrees(row['yaw_rmse_rad']),yaw_max_deg=math.degrees(row['yaw_max_rad']))
-                if trial['task']=='E1_lateral':
+                if trial['task']=='E1_lateral' or trial['task'].startswith('E1_response_'):
                     direction = path[-1,:2]-path[0,:2]; direction /= np.linalg.norm(direction)
                     normal = np.array([-direction[1],direction[0]])
                     signed = (poses[:,:2]-path[0,:2])@normal

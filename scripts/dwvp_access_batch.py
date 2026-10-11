@@ -188,7 +188,7 @@ def selected_trials(session, conditions=None, repeats=None, resume=False, contin
         validate_retry_manifest(session, manifest)
     requested = conditions or list(experiment.CONDITIONS)
     requested = [c for item in requested for c in
-                 (experiment.CONDITIONS[:-1] if item == 'E1' else [item])]
+                 (experiment.E1_CONDITIONS if item == 'E1' else [item])]
     if not set(requested) <= set(experiment.CONDITIONS):
         raise ValueError('Unknown condition selection')
     if repeats is not None and (not repeats or not set(repeats) <= set(range(1, 6))):

@@ -154,7 +154,7 @@ def test_experiment_handoff_fresh_session_and_failure_cleanup(monkeypatch, tmp_p
     else:
         workflow.run_experiment(args, folder, source)
     manifest = json.loads((folder/'session/manifest.json').read_text())
-    assert len(manifest['trials']) == 55
+    assert len(manifest['trials']) == 65
     assert '--start-from-current' in calls[-1] and '--resume' not in calls[-1]
     assert '--continue-on-endpoint-failure' in calls[-1]
     assert '--dry-run' in calls[-2]
@@ -223,7 +223,7 @@ def test_resume_dry_run_and_input_rejection_do_not_touch_ros(monkeypatch, tmp_pa
     monkeypatch.setattr(sys, 'argv', base+['--dry-run'])
     workflow.main()
     text = capsys.readouterr().out
-    assert 'Remaining trials: 9' in text and manifest['trials'][2]['id'] in text
+    assert 'Remaining trials: 11' in text and manifest['trials'][2]['id'] in text
     assert {str(p): p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()} == before
     monkeypatch.setattr(sys, 'argv', base+['--map', str(saved_map), '--dry-run'])
     with pytest.raises(ValueError, match='frozen conditions'):

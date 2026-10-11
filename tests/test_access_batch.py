@@ -17,8 +17,8 @@ import dwvp_access_batch as batch
 @pytest.mark.parametrize('current', [[0, 0, 0], [1.2, -3.1, 1.3], [2, 1, -3.1]])
 def test_measured_start_preserves_lateral_error_for_all_conditions(tmp_path, current):
     session = tmp_path / 'session'
-    manifest = experiment.prepare(session, ROOT / 'params/hsrb_dwvp_access_params.yaml', current_start=current)
-    for name in experiment.CONDITIONS[:-1]:
+    manifest = experiment.prepare(session, ROOT / 'params/hsrb_dwvp_access_params.yaml', current_start=current, conditions=experiment.LEGACY_CONDITIONS)
+    for name in experiment.LEGACY_CONDITIONS[:-1]:
         _, trial, path = experiment.load_trial(session, name + '_DWVP_r1')
         np.testing.assert_allclose(experiment.start_pose(manifest, trial), current, atol=1e-12)
         origin = manifest['map_origins'][name]
@@ -84,26 +84,26 @@ def test_current_start_metrics_and_resume_use_verified_recorded_geometry(tmp_pat
 
 def test_legacy_manual_origin_remains_common_and_invalid_anchor_reserves_nothing(tmp_path):
     params = ROOT / 'params/hsrb_dwvp_access_params.yaml'
-    manifest = experiment.prepare(tmp_path/'legacy', params, [1., 2., 0.])
+    manifest = experiment.prepare(tmp_path/'legacy', params, [1., 2., 0.], conditions=experiment.LEGACY_CONDITIONS)
     assert 'map_origins' not in manifest
     np.testing.assert_allclose(manifest['starts']['E1_lateral']['map_pose'], [1, 2.5, 0])
     for pose in ([0, float('nan'), 0], [1, 2]):
         with pytest.raises(ValueError):
-            experiment.prepare(tmp_path/'invalid', params, current_start=pose)
+            experiment.prepare(tmp_path/'invalid', params, current_start=pose, conditions=experiment.LEGACY_CONDITIONS)
         assert not (tmp_path/'invalid').exists()
     with pytest.raises(ValueError):
-        experiment.prepare(tmp_path/'invalid', params, [0, 0, 0], current_start=[0, 0, 0])
+        experiment.prepare(tmp_path/'invalid', params, [0, 0, 0], current_start=[0, 0, 0], conditions=experiment.LEGACY_CONDITIONS)
 
 
 def test_missing_e2_is_not_silently_skipped_and_repeat_order_is_frozen(tmp_path):
-    manifest = experiment.prepare(tmp_path/'session', ROOT/'params/hsrb_dwvp_access_params.yaml', current_start=[0, 0, 0])
+    manifest = experiment.prepare(tmp_path/'session', ROOT/'params/hsrb_dwvp_access_params.yaml', current_start=[0, 0, 0], conditions=experiment.LEGACY_CONDITIONS)
     with pytest.raises(ValueError, match='Supply the E2 route'):
         batch.selected_trials(tmp_path/'session')
     _, trials = batch.selected_trials(tmp_path/'session', ['E1'])
-    assert len(trials) == 55
-    assert trials == [t for t in manifest['trials'] if t['task'] != 'E2_environment']
+    assert len(trials) == 45
+    assert trials == [t for t in manifest['trials'] if t['task'] in experiment.E1_CONDITIONS]
     _, first = batch.selected_trials(tmp_path/'session', ['E1'], [1])
-    assert len(first) == 11
+    assert len(first) == 9
     reserved = tmp_path/'session'/'runs'/first[0]['id']
     reserved.mkdir(parents=True)
     with pytest.raises(FileExistsError):
@@ -115,7 +115,7 @@ def test_e2_keeps_map_coordinates_when_e1_is_anchored(tmp_path):
     path = np.array([[3., 4., .2], [4., 4.2, .2]])
     np.savetxt(route, path, delimiter=',', header='x,y,yaw', comments='')
     experiment.prepare(tmp_path/'session', ROOT/'params/hsrb_dwvp_access_params.yaml',
-                       current_start=[1, 2, 1.5], environment_path=route)
+                       current_start=[1, 2, 1.5], environment_path=route, conditions=experiment.LEGACY_CONDITIONS)
     manifest, trial, actual = experiment.load_trial(tmp_path/'session', 'E2_environment_DWVP_r1')
     np.testing.assert_allclose(actual, path)
     np.testing.assert_allclose(experiment.start_pose(manifest, trial), path[0])
@@ -267,8 +267,8 @@ def test_live_map_must_match_unknowns_and_geometry():
 def test_geometry_rejects_obstacle_before_any_motion(tmp_path):
     from PIL import Image
     session = tmp_path/'session'
-    experiment.prepare(session, ROOT/'params/hsrb_dwvp_access_params.yaml', current_start=[0, 0, 0])
-    _, trials = batch.selected_trials(session, ['E1'])
+    experiment.prepare(session, ROOT/'params/hsrb_dwvp_access_params.yaml', current_start=[0, 0, 0], conditions=experiment.LEGACY_CONDITIONS)
+    _, trials = batch.selected_trials(session, experiment.LEGACY_CONDITIONS[:-1])
     image = np.full((200, 200), 254, dtype=np.uint8)
     Image.fromarray(image).save(tmp_path/'map.pgm')
     info = dict(image='map.pgm', resolution=.05, origin=[-5., -5., 0.], negate=0,
@@ -305,7 +305,7 @@ def test_reverse_leg_preserves_the_experimental_initial_condition(tmp_path, cond
     initial = [1., -2., .7]
     session = tmp_path/'session'
     manifest = experiment.prepare(session, ROOT/'params/hsrb_dwvp_access_params.yaml',
-        current_start=initial, bidirectional=True, conditions=[condition], repeats=[1])
+        current_start=initial, bidirectional=True, conditions=[condition], repeats=[1, 2])
     first, second = manifest['trials'][:2]
     assert [first['direction'], second['direction']] == ['forward', 'reverse']
     _, _, forward = experiment.load_trial(session, first['id'])
@@ -316,18 +316,18 @@ def test_reverse_leg_preserves_the_experimental_initial_condition(tmp_path, cond
     assert abs(float(experiment.wrap(far_start[2]-initial[2]))) == pytest.approx(np.pi)
     direction = (reverse[-1, :2]-reverse[0, :2])/2.5
     normal = np.array([-direction[1], direction[0]])
-    assert (far_start[:2]-reverse[0, :2]) @ normal == pytest.approx(.5 if condition=='E1_lateral' else 0.)
-    assert float(experiment.wrap(reverse[-1, 2]-reverse[0, 2])) == pytest.approx(0 if condition=='E1_lateral' else np.pi/2)
+    assert (far_start[:2]-reverse[0, :2]) @ normal == pytest.approx(.5 if condition=='E1_lateral' or condition in experiment.RESPONSE_CONDITIONS else 0.)
+    assert float(experiment.wrap(reverse[-1, 2]-reverse[0, 2])) == pytest.approx(0 if condition=='E1_lateral' or condition in experiment.RESPONSE_CONDITIONS else np.pi/2)
 
 
 def test_bidirectional_selection_and_directional_denominators(tmp_path):
     session = tmp_path/'session'
     manifest = experiment.prepare(session, ROOT/'params/hsrb_dwvp_access_params.yaml',
         current_start=[0, 0, 0], bidirectional=True, conditions=['E1'], repeats=[1])
-    assert len(manifest['trials']) == 11
-    assert [t['direction'] for t in manifest['trials']] == ['forward','reverse']*5+['forward']
+    assert len(manifest['trials']) == 13
+    assert [t['direction'] for t in manifest['trials']] == ['forward','reverse']*6+['forward']
     report = experiment.summarize(session)
-    assert sum(g['planned'] for g in report['groups']) == 11
+    assert sum(g['planned'] for g in report['groups']) == 13
     assert all(g['planned'] == 1 for g in report['groups'])
     assert batch.selected_trials(session)[1] == manifest['trials']
     reverse_trial = manifest['trials'][1]

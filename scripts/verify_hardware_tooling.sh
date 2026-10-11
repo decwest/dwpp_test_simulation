@@ -19,12 +19,19 @@ docker run --rm --network none --user "$(id -u):$(id -g)" --entrypoint bash \
   -v "$uv_binary:/usr/local/bin/uv:ro" -v "$python_dir:$python_dir:ro" \
   -v "$simulator_dir:$simulator_dir:ro" -v "$package_dir:/tool:ro" \
   -v "$run_dir:/output" -w "$simulator_dir" "$image_name" -c '
+    set -eo pipefail
     uv run --offline --locked --python 3.11.11 --no-sync /tool/tests/generate_metrics_reference.py /output/reference
+    uv run --offline --locked --python 3.11.11 --no-sync /tool/scripts/dwvp_access_experiment.py prepare \
+      --output /output/response-session --params /tool/params/hsrb_dwvp_access_params.yaml \
+      --origin 0 0 0 --conditions E1 --repeats 1
+    uv run --offline --locked --python 3.11.11 --no-sync /tool/scripts/dwvp_access_sim_counterpart.py \
+      --session /output/response-session --include-planned --output /output/response-counterpart
   '
 docker run --rm --network none --user "$(id -u):$(id -g)" \
   --entrypoint bash -e ROS_LOCALHOST_ONLY=1 -e ROS_DOMAIN_ID=178 \
   -e ROS_HOME=/tmp/ros -e PYTHONDONTWRITEBYTECODE=1 -e MPLCONFIGDIR=/tmp/matplotlib \
   -e DWVP_METRICS_REFERENCE=/ws/reference \
+  -e DWVP_RESPONSE_REFERENCE=/ws/response-counterpart \
   -v "$run_dir:/ws" \
   -v "$package_dir:/ws/src/dwpp_test_simulation:ro" \
   -v "$third_party_dir/nav2_dynamic_window_pure_pursuit_controller:/ws/src/nav2_dynamic_window_pure_pursuit_controller:ro" \

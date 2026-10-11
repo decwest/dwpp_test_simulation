@@ -56,7 +56,7 @@ def main():
             condition['orientation_start_m'] = .2
             condition['orientation_length_m'] = .15
     config['conditions']['E1_lateral']['start_pose'] = [0., .2, 0.]
-    expected_trials = sum(len(c['methods']) for c in config['conditions'].values())
+    expected_trials = sum(len(config['conditions'][name]['methods']) for name in experiment.LEGACY_CONDITIONS)
     configfile = out / 'synthetic_config.yaml'
     configfile.write_text(yaml.safe_dump(config))
     route = out / 'E2_environment.csv'
@@ -74,7 +74,7 @@ def main():
         session = out / 'session'
         run_while_spinning(plant, [sys.executable, str(ROOT/'scripts/dwvp_access_experiment.py'),
             'prepare', '--output', str(session), '--params', str(params), '--config', str(configfile),
-            '--environment-path', str(route), '--start-from-current', '--repeats', '1'] +
+            '--environment-path', str(route), '--start-from-current', '--repeats', '1', '--conditions', *experiment.LEGACY_CONDITIONS] +
             (['--bidirectional'] if args.bidirectional else []), out/'capture.log', 30.)
         manifest = json.loads((session/'manifest.json').read_text())
         assert (session/'start_capture.json').is_file()
@@ -160,7 +160,7 @@ def main():
         # DWVP's terminal heading controller supports a position-preserving
         # turn; a measured path still forbids duplicate positions.
         turn_session = out/'turn_session'
-        turn_manifest = experiment.prepare(turn_session, params, current_start=[0, 0, 0])
+        turn_manifest = experiment.prepare(turn_session, params, current_start=[0, 0, 0], conditions=experiment.LEGACY_CONDITIONS)
         turn_trial = turn_manifest['trials'][0]
         packet = dict(start=[0, 0, 0], path=[[0, 0, 0], [0, 0, np.pi]], output=str(out/'turn_record'))
         packet_file = out/'turn.json'; packet_file.write_text(json.dumps(packet))

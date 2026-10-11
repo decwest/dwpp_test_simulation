@@ -208,7 +208,7 @@ def main():
                 # publication guarantees negative source ages are recorded.
                 timer.timer_period_ns = int(1e9 / (200 if mode == 'small_skew' else 30))
                 session = Path(directory) / (mode+'_'+controller)
-                manifest = experiment.prepare(session, ROOT / 'params/hsrb_dwvp_access_params.yaml', [0., 0., 0.])
+                manifest = experiment.prepare(session, ROOT / 'params/hsrb_dwvp_access_params.yaml', [0., 0., 0.], conditions=experiment.LEGACY_CONDITIONS)
                 if mode in ('normal', 'small_skew', 'wrong_start', 'missing_scan', 'stale_scan', 'bad_scan_frame'):
                     checked = subprocess.run([sys.executable, str(ROOT / 'scripts/dwvp_access_experiment.py'), 'preflight',
                         '--session', str(session), '--trial', trial_id], timeout=40, capture_output=True, text=True)
@@ -314,7 +314,7 @@ def main():
                 state.update(controller='DWVP', sequence=0, path=None, index=0, started=None, seen_yaw=False,
                              mode=mode, finished=None, completion_pending=False, position_residual=.1013, abort=abort)
                 session = Path(directory)/label
-                manifest = experiment.prepare(session, ROOT/'params/hsrb_dwvp_access_params.yaml', [0,0,0])
+                manifest = experiment.prepare(session, ROOT/'params/hsrb_dwvp_access_params.yaml', [0,0,0], conditions=experiment.LEGACY_CONDITIONS)
                 trial_id = 'E1_lateral_DWVP_r1'
                 _, _, reference = experiment.load_trial(session, trial_id)
                 folder = session/'alignment'

@@ -150,7 +150,7 @@ def test_table_zero_omission_requires_every_method_has_data(tmp_path):
 
 def test_group_means_sample_sd_and_partial_attempts(tmp_path):
     session = tmp_path/'session'
-    experiment.prepare(session,ROOT/'params/hsrb_dwvp_access_params.yaml',[0.,0.,0.])
+    experiment.prepare(session,ROOT/'params/hsrb_dwvp_access_params.yaml',[0.,0.,0.], conditions=experiment.LEGACY_CONDITIONS)
     for repeat, error, success in ((1,.2,True),(2,.4,False)):
         folder = session/'runs'/f'E1_lateral_DWVP_r{repeat}'
         folder.mkdir(parents=True)
@@ -177,7 +177,7 @@ def test_simulator_trajectories_through_session_summary(tmp_path, index):
     arrays = np.load(reference/case['trajectory'])
     controller = dict(vp='VP_CLIP',vp_scaled='VP_SCALED',dwvp='DWVP',dwpp='DWPP')[case['method']]
     session = tmp_path/'session'
-    experiment.prepare(session,ROOT/'params/hsrb_dwvp_access_params.yaml',[0.,0.,0.])
+    experiment.prepare(session,ROOT/'params/hsrb_dwvp_access_params.yaml',[0.,0.,0.], conditions=experiment.LEGACY_CONDITIONS)
     trial_id = case['condition']+'_'+controller+'_r1'
     folder = session/'runs'/trial_id
     folder.mkdir(parents=True)

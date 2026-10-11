@@ -53,6 +53,7 @@ controller_server:
       use_velocity_scaled_lookahead_dist: true
       use_collision_detection: true
       orientation_time_weight: 1.0
+      lateral_time_constant: 0.0
       min_orientation_time: 0.2
       velocity_feedback: OPEN_LOOP
       use_dynamic_window_vector_pursuit: true
@@ -177,6 +178,7 @@ controller_server:
       use_velocity_scaled_lookahead_dist: true
       use_collision_detection: true
       orientation_time_weight: 1.0
+      lateral_time_constant: 0.0
       min_orientation_time: 0.2
       velocity_feedback: OPEN_LOOP
       use_dynamic_window_vector_pursuit: false
@@ -197,6 +199,7 @@ controller_server:
       use_velocity_scaled_lookahead_dist: true
       use_collision_detection: true
       orientation_time_weight: 1.0
+      lateral_time_constant: 0.0
       min_orientation_time: 0.2
       velocity_feedback: OPEN_LOOP
       use_dynamic_window_vector_pursuit: false
