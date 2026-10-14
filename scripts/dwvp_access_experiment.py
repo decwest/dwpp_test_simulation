@@ -311,7 +311,7 @@ def validate_path(path):
 
 
 def prepare(output, params, origin=None, environment_path=None, seed=20261004, config_file=None,
-            *, current_start=None, bidirectional=False, conditions=None, repeats=None):
+            *, current_start=None, bidirectional=False, conditions=None, repeats=None, ordered=False):
     import yaml
     config = yaml.safe_load(Path(config_file).read_text()) if config_file else default_config()
     available = tuple(name for name in CONDITIONS if name in config['conditions'])
@@ -427,7 +427,8 @@ def prepare(output, params, origin=None, environment_path=None, seed=20261004, c
             if task not in selected_conditions:
                 continue
             methods = list(config['conditions'][task]['methods'])
-            rng.shuffle(methods)
+            if not ordered:
+                rng.shuffle(methods)
             trials.extend({'id': f'{task}_{controller}_r{repeat}', 'task': task,
                            'controller': controller, 'repeat': repeat,
                            'acceleration_scale': config['conditions'][task]['acceleration_scale'],
@@ -458,6 +459,8 @@ def prepare(output, params, origin=None, environment_path=None, seed=20261004, c
                 'paths': paths, 'starts': starts, 'trials': trials, 'parameter_sets': parameter_sets,
                 'software_manifest_status': 'Regenerate after commit; working tree is not a committed release',
                 'status': 'prepared_unrecorded'}
+    if ordered:
+        manifest['ordered'] = True
     if bidirectional:
         manifest['bidirectional'] = True
         manifest['direction_policy'] = 'alternate scored forward/reverse legs; rotate canonical E1 geometry by pi for reverse'
@@ -1121,6 +1124,7 @@ def main():
     p.add_argument('--config', type=Path, help='Experiment geometry, common tuning and metric settings')
     p.add_argument('--seed', type=int, default=20261004)
     p.add_argument('--bidirectional', action='store_true', help='Score alternating forward/reverse legs; freeze their starts')
+    p.add_argument('--ordered', action='store_true', help='Keep each condition\'s configured methods order without shuffling')
     p.add_argument('--conditions', nargs='+', choices=['E1', *CONDITIONS])
     p.add_argument('--repeats', type=int, nargs='+', help='Freeze only these repetitions (1..5)')
     for command in ('run', 'preflight'):
@@ -1151,7 +1155,8 @@ def main():
             captured = capture_start(args.base_frame, args.odom_topic)
         result = prepare(args.output, args.params, args.origin, args.environment_path, args.seed, args.config,
                          current_start=captured['pose'] if captured else None,
-                         bidirectional=args.bidirectional, conditions=args.conditions, repeats=args.repeats)
+                         bidirectional=args.bidirectional, conditions=args.conditions, repeats=args.repeats,
+                         ordered=args.ordered)
         if captured:
             write_json(args.output / 'start_capture.json', captured)
             print('Frozen robot start [map x, y, yaw]: ' + str(captured['pose']))

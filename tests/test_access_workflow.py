@@ -133,15 +133,20 @@ def test_failed_map_save_can_retry_without_restarting_slam(monkeypatch, tmp_path
 
 
 @pytest.mark.parametrize('fail', [False, True])
-def test_experiment_handoff_fresh_session_and_failure_cleanup(monkeypatch, tmp_path, fail):
+@pytest.mark.parametrize('noise_duration', [None, 2.])
+def test_experiment_handoff_fresh_session_and_failure_cleanup(monkeypatch, tmp_path, fail, noise_duration):
     fake_operator(monkeypatch)
     source = make_map(tmp_path/'maps/lab_test')
     folder = tmp_path/'results/dwvp_access/lab_test/run_1'; folder.mkdir(parents=True)
     args = NS(workspace=tmp_path, no_rviz=False, no_joy=False, params=ROOT/'params/hsrb_dwvp_access_params.yaml',
-              config=None, repeats=None, conditions=['E1'])
+              config=None, repeats=None, conditions=['E1'], stationary_noise=noise_duration)
     calls = []
     def child(command, logfile, background, timeout=None):
         assert FakeProcess.instances[-1].stopped and not FakeProcess.instances[0].stopped
+        if 'stationary-noise' in command:
+            assert not calls and not (folder/'session').exists()
+            fake_noise(command)
+            return
         calls.append(command)
         if 'prepare' in command:
             workflow.experiment.prepare(folder/'session', args.params, current_start=[0,0,0], bidirectional=True, conditions=['E1'])
@@ -155,11 +160,142 @@ def test_experiment_handoff_fresh_session_and_failure_cleanup(monkeypatch, tmp_p
         workflow.run_experiment(args, folder, source)
     manifest = json.loads((folder/'session/manifest.json').read_text())
     assert len(manifest['trials']) == 65
+    assert '--bidirectional' in calls[0] and '--ordered' not in calls[0]
     assert '--start-from-current' in calls[-1] and '--resume' not in calls[-1]
     assert '--continue-on-endpoint-failure' in calls[-1]
     assert '--dry-run' in calls[-2]
     assert (folder/'map/map.pgm').read_bytes() == source.with_suffix('.pgm').read_bytes()
     assert all(p.stopped for p in FakeProcess.instances)
+
+
+def fake_noise(command):
+    assert command[4] == 'stationary-noise'
+    assert command[command.index('--frequency')+1] == '30'
+    assert command[command.index('--frame')+1] == 'map'
+    assert FakeProcess.instances[-1].stopped and not FakeProcess.instances[0].stopped
+    output = Path(command[command.index('--output')+1]); output.mkdir()
+    workflow.experiment.write_json(output/'noise_summary.json',
+        dict(x_std_m=.003, y_std_m=.004, heading_std_deg=.2, stationary_verified=True))
+
+
+@pytest.mark.parametrize('noise_args,seconds', [([], None), (['--stationary-noise'], 30.),
+    (['--stationary-noise', '2.5'], 2.5)])
+@pytest.mark.parametrize('ordered', [False, True])
+def test_one_way_cli_prepares_once_and_returns_to_fixed_start(monkeypatch, tmp_path, capsys, noise_args, seconds, ordered):
+    fake_operator(monkeypatch)
+    source = make_map(tmp_path/'maps/lab_test')
+    workflow.atomic_json(source.parent.parent/'latest.json', dict(map='lab_test/map.yaml'))
+    monkeypatch.setitem(sys.modules, 'ament_index_python.packages',
+                        NS(get_package_share_directory=lambda name: str(ROOT)))
+    monkeypatch.setattr(sys.stdin, 'isatty', lambda: True)
+    monkeypatch.setattr(workflow, 'require_idle', lambda args: None)
+    prompts, calls = [], []
+    monkeypatch.setattr(workflow, 'wait_enter', lambda message, background: prompts.append(message))
+    def child(command, logfile, background, timeout=None):
+        assert prompts and FakeProcess.instances[-1].stopped
+        workflow.check_background(background)
+        calls.append(command)
+        if 'stationary-noise' in command:
+            assert len(calls) == 1 and not (logfile.parent/'session').exists()
+            assert float(command[command.index('--duration')+1]) == seconds
+            assert timeout > seconds
+            fake_noise(command)
+        elif 'prepare' in command:
+            assert '--bidirectional' not in command and '--start-from-current' in command
+            assert ('--ordered' in command) == ordered
+            assert command[command.index('--repeats')+1:] == ['1']
+            assert command[command.index('--conditions')+1] == 'E1'
+            workflow.experiment.prepare(Path(command[command.index('--output')+1]),
+                ROOT/'params/hsrb_dwvp_access_params.yaml', current_start=[0, 0, 0],
+                conditions=['E1'], repeats=[1], ordered=ordered)
+        else:
+            assert '--start-from-current' not in command
+            assert '--resume' in command  # Align to the frozen first start if necessary.
+            assert '--continue-on-endpoint-failure' in command
+    monkeypatch.setattr(workflow, 'run_child', child)
+    monkeypatch.setattr(sys, 'argv', ['workflow', '--workspace', str(tmp_path), 'experiment', '--one-way']
+        + (['--ordered'] if ordered else []) + noise_args)
+    workflow.main()
+    assert len(calls) == (4 if seconds is not None else 3)
+    assert '--dry-run' in calls[-2] and '--dry-run' not in calls[-1]
+    session = tmp_path/json.loads((tmp_path/'results/dwvp_access/latest.json').read_text())['session']
+    manifest = json.loads((session/'manifest.json').read_text())
+    assert len(manifest['trials']) == 13 and not manifest.get('bidirectional')
+    if seconds is not None:
+        assert f'Enter 後 {seconds:g} 秒は静止' in prompts[0]
+        assert 'SD x=0.003000 m, y=0.004000 m, yaw=0.200000 deg' in capsys.readouterr().out
+        assert (session.parent/'stationary_noise/noise_summary.json').exists()
+    assert all(p.stopped for p in FakeProcess.instances)
+
+
+@pytest.mark.parametrize('extra', [['--resume'], ['--retry-failed'], ['--prepared-session', 'missing'],
+    ['--retry-trial', 'trial', '--source-session', 'missing']])
+def test_one_way_rejects_existing_session_modes_before_side_effects(monkeypatch, tmp_path, extra):
+    monkeypatch.setattr(sys, 'argv', ['workflow', '--workspace', str(tmp_path), 'experiment', '--one-way']+extra)
+    with pytest.raises(SystemExit) as error:
+        workflow.main()
+    assert error.value.code == 2 and not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize('extra', [['--ordered'], ['--stationary-noise', '0'],
+    ['--stationary-noise', '-1'], ['--stationary-noise', 'nan'], ['--stationary-noise', 'inf']])
+def test_invalid_video_options_rejected_before_side_effects(monkeypatch, tmp_path, extra):
+    monkeypatch.setattr(sys, 'argv', ['workflow', '--workspace', str(tmp_path), 'experiment']+extra)
+    with pytest.raises(SystemExit) as error:
+        workflow.main()
+    assert error.value.code == 2 and not list(tmp_path.iterdir())
+
+
+def test_noise_failure_prevents_prepare_batch_and_pointer_update(monkeypatch, tmp_path):
+    fake_operator(monkeypatch)
+    source = make_map(tmp_path/'maps/lab_test')
+    folder = tmp_path/'run'; folder.mkdir()
+    args = NS(workspace=tmp_path, no_rviz=False, no_joy=False,
+              params=ROOT/'params/hsrb_dwvp_access_params.yaml', stationary_noise=30.)
+    calls = []
+    def child(command, logfile, background, timeout=None):
+        calls.append(command)
+        fake_noise(command)
+        raise RuntimeError('Stationarity was not verified')
+    monkeypatch.setattr(workflow, 'run_child', child)
+    with pytest.raises(RuntimeError, match='Stationarity'):
+        workflow.run_experiment(args, folder, source)
+    assert len(calls) == 1 and not (folder/'session').exists()
+    assert not (tmp_path/'results/dwvp_access/latest.json').exists()
+    assert all(p.stopped for p in FakeProcess.instances)
+
+
+@pytest.mark.parametrize('explicit_trial', [False, True])
+def test_e1_retry_noise_precedes_freezing_new_attempt(monkeypatch, tmp_path, explicit_trial):
+    from test_access_batch import write_success, endpoint_miss
+    fake_operator(monkeypatch)
+    parent = tmp_path/'results/dwvp_access/lab/run_old'
+    saved_map = make_map(parent/'map')
+    source = parent/'session'
+    manifest = workflow.experiment.prepare(source, ROOT/'params/hsrb_dwvp_access_params.yaml',
+        current_start=[0, 0, 0], bidirectional=True, conditions=['E1_response_L0p11_T0p5'], repeats=[1])
+    trial = manifest['trials'][0]
+    endpoint_miss(write_success(source, trial))
+    before = {p: p.read_bytes() for p in source.rglob('*') if p.is_file()}
+    folder = workflow.new_directory(parent/'retries', 'retry')
+    args = NS(workspace=tmp_path, no_rviz=False, no_joy=False, retry_source=source,
+        retry_failed=None if explicit_trial else source, retry_trial=trial['id'] if explicit_trial else None,
+        params=source/trial['params_file'], stationary_noise=2.)
+    calls = []
+    def child(command, logfile, background, timeout=None):
+        calls.append(command)
+        if 'stationary-noise' in command:
+            assert len(calls) == 1 and not (folder/'session').exists()
+            fake_noise(command)
+        else:
+            assert (folder/'stationary_noise/noise_summary.json').exists()
+            assert '--start-from-current' in command and '--resume' not in command
+    monkeypatch.setattr(workflow, 'run_child', child)
+    workflow.run_experiment(args, folder, saved_map)
+    assert len(calls) == 3
+    new = json.loads((folder/'session/manifest.json').read_text())
+    assert 'retry_of' in new and new['trials'] == manifest['trials']
+    assert all(p.read_bytes() == data for p, data in before.items())
 
 
 def prepare_resume(workspace):
@@ -191,16 +327,21 @@ def test_resume_selects_original_map_and_frozen_pending_parameters(tmp_path):
         workflow.resume_inputs(tmp_path, session)
 
 
-def test_resume_never_prepares_or_rewrites_previous_trials(monkeypatch, tmp_path):
+@pytest.mark.parametrize('noise_duration', [None, 2.])
+def test_resume_never_prepares_or_rewrites_previous_trials(monkeypatch, tmp_path, noise_duration):
     fake_operator(monkeypatch)
     session, saved_map, manifest = prepare_resume(tmp_path)
     _, _, pending = workflow.resume_inputs(tmp_path, session)
     before = {str(p): p.read_bytes() for p in session.rglob('*') if p.is_file()}
     args = NS(workspace=tmp_path, no_rviz=False, no_joy=False, resume=session,
-              resume_session=session, params=session/pending[0]['params_file'])
+              resume_session=session, params=session/pending[0]['params_file'], stationary_noise=noise_duration)
     folder = workflow.new_directory(session.parent/'resumes', 'resume')
     calls = []
     def child(command, logfile, background, timeout=None):
+        if 'stationary-noise' in command:
+            assert not calls
+            fake_noise(command)
+            return
         assert FakeProcess.instances[-1].stopped
         assert '--resume' in command and '--continue-on-endpoint-failure' in command
         assert 'prepare' not in command
@@ -270,7 +411,8 @@ def test_prepared_e2_dry_run_checks_frozen_route_and_map_without_ros(monkeypatch
 
 @pytest.mark.parametrize('resuming', [False, True])
 @pytest.mark.parametrize('bidirectional', [False, True])
-def test_e2_workflow_previews_fixed_route_and_never_reanchors(monkeypatch, tmp_path, resuming, bidirectional):
+@pytest.mark.parametrize('noise_duration', [None, 2.])
+def test_e2_workflow_previews_fixed_route_and_never_reanchors(monkeypatch, tmp_path, resuming, bidirectional, noise_duration):
     from test_access_batch import write_success
     fake_operator(monkeypatch)
     session, saved_map, manifest = prepare_environment(tmp_path, bidirectional)
@@ -286,10 +428,14 @@ def test_e2_workflow_previews_fixed_route_and_never_reanchors(monkeypatch, tmp_p
     before = {str(p): p.read_bytes() for p in session.rglob('*') if p.is_file()}
     args = NS(workspace=tmp_path, no_rviz=False, no_joy=False,
               prepared_session=None if resuming else session, resume=session if resuming else None,
-              resume_session=session, params=session/pending[0]['params_file'])
+              resume_session=session, params=session/pending[0]['params_file'], stationary_noise=noise_duration)
     folder = workflow.new_directory(session.parent/'executions', 'start')
     calls = []
     def child(command, logfile, background, timeout=None):
+        if 'stationary-noise' in command:
+            assert not calls and FakeProcess.instances[1].stopped
+            fake_noise(command)
+            return
         assert '--start-from-current' not in command and 'prepare' not in command
         assert '--resume' in command  # Includes the initial fixed-start alignment.
         assert FakeProcess.instances[1].stopped and FakeProcess.instances[2].stopped
@@ -338,16 +484,21 @@ def test_interrupted_fixed_retry_dry_run_preserves_all_originals(monkeypatch,tmp
     assert {str(p):p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}==before
 
 
-def test_fixed_retry_owns_a_new_single_trial_and_keeps_map_binding(monkeypatch,tmp_path):
+@pytest.mark.parametrize('noise_duration', [None, 2.])
+def test_fixed_retry_owns_a_new_single_trial_and_keeps_map_binding(monkeypatch,tmp_path,noise_duration):
     fake_operator(monkeypatch)
     session,saved_map,trial=interrupted_environment(tmp_path)
     workflow.fixed_retry_inputs(tmp_path,session,trial['id'])
     before={str(p):p.read_bytes() for p in session.rglob('*') if p.is_file()}
     folder=workflow.new_directory(session.parent/'retries','retry')
     args=NS(workspace=tmp_path,no_rviz=False,no_joy=False,retry_trial=trial['id'],
-            retry_source=session,fixed_retry=True,params=session/trial['params_file'])
+            retry_source=session,fixed_retry=True,params=session/trial['params_file'],stationary_noise=noise_duration)
     calls=[]
     def child(command,logfile,background,timeout=None):
+        if 'stationary-noise' in command:
+            assert not calls and not (folder/'session').exists()
+            fake_noise(command)
+            return
         assert '--start-from-current' not in command and '--resume' in command
         assert FakeProcess.instances[1].stopped and FakeProcess.instances[2].stopped
         calls.append(command)

@@ -16,9 +16,9 @@ Ctrl-C cancels without an implicit save. The free threshold is explicitly 0.196.
 it, and starts AMCL, RViz and F310. Position the robot, set RViz's initial pose,
 verify map/scan agreement, release LB and press Enter. The workflow stops teleop,
 captures the start, prepares a new bidirectional E1 schedule, checks it, executes
-`batch --start-from-current`, and summarizes. The default is all 55 E1 trials;
-`--repeats 1` selects 11. `--conditions E1_lateral` restricts conditions. E2 remains
-in the manual map-fixed workflow below. The fixed alignment targets and measured
+`batch --start-from-current`, and summarizes. The default is all 65 E1 trials;
+`--repeats 1` selects 13. `--conditions E1_lateral` selects the legacy condition.
+E2 uses `--prepared-session` with a frozen map-fixed session. The fixed alignment targets and measured
 per-trial reference placement are preserved.
 
 By default, each invocation starts fresh in
@@ -120,6 +120,86 @@ The standalone `ros2 launch ytlab2_hsr_modules mapping_joy.launch.py` also combi
 SLAM, RViz and F310, but timestamped saving belongs to the shell entry point.
 Rebuild `hsrb_mapping`, `ytlab2_hsr_modules`, and `dwpp_test_simulation` after adding
 these entry points (`./dwvp_access.sh build` includes them).
+
+## 映像・Fig. 1 用セッション（2026-10-14）
+
+以下のコマンドは、ビルドと ROS 環境の読み込みを済ませた HSR コンテナの
+ワークスペースで実行する。映像用の試行は論文の表には使わない。
+`--one-way` は新規の E1 セッション用であり、各条件を同じ開始位置・向きから
+実行する。開始位置は Enter 後の停止姿勢から凍結し、必要なら最初に整列する。
+各試行後は DWVP でその位置・向きへ帰還する。最後の帰還も実施し、整列・帰還は
+計測対象の試行とは別に保存する。
+
+E1 の経路は測定した開始姿勢に対する相対経路である。地図は
+`maps/latest.json` が指す地図、または `--map PATH` で指定した任意の地図を使える。
+実際の環境と自己位置推定が一致し、経路と帰還に必要な空間が空いていることを確認する。
+
+```bash
+# E1 の全 13 試行を各 1 回、同じ向きで撮影する
+./dwvp_access.sh experiment --one-way --ordered --stationary-noise 30
+
+# Fig. 1(a): L=0.11 m で時定数 0.5 s と 1.5 s を比較する（2 試行）
+./dwvp_access.sh experiment --one-way --ordered --stationary-noise 30 \
+  --conditions E1_response_L0p11_T0p5 E1_response_L0p11_T1p5
+
+# Fig. 1(b): 方位区間の挙動を撮影する（3 試行）
+./dwvp_access.sh experiment --one-way --ordered --stationary-noise 30 \
+  --conditions E1_orientation_nominal
+```
+
+`--one-way` の反復の既定値は `--repeats 1` である。既定の条件には
+`E1_lateral` を含めない。`--ordered` を付けると、条件内の手法を設定ファイルの
+`methods` の順に実行し、`session/manifest.json` に `ordered: true` を記録する。
+既定の設定では次の順になる（`DWVP` は EC-DWVP の実装名）。
+
+| 試行 | 条件 | 手法の順序 |
+| --- | --- | --- |
+| 1 | `E1_response_L0p11_T0p5` | DWVP |
+| 2 | `E1_response_L0p11_T1p5` | DWVP |
+| 3 | `E1_response_L0p33_T0p5` | DWVP |
+| 4 | `E1_response_L0p33_T1p5` | DWVP |
+| 5–7 | `E1_orientation_nominal` | VP_CLIP → VP_SCALED → DWVP |
+| 8–10 | `E1_orientation_half` | VP_CLIP → VP_SCALED → DWVP |
+| 11–13 | `E1_orientation_quarter` | VP_CLIP → VP_SCALED → DWVP |
+
+`--ordered` は `experiment --one-way` と組み合わせる。`--one-way` と
+`--resume`、`--retry-failed`、`--retry-trial`、`--prepared-session` は併用できない。
+引数なしの `experiment` は従来どおり双方向の 65 試行であり、手法順をシャッフルする。
+
+E2 は、別途凍結済みの撮影用セッションを使う。以下のパスにセッションと隣接する
+`map/map.yaml` を配置してから実行する。最初のセッションは VP_CLIP・DWVP・MPPI が
+各 1 試行、次のセッションは DWB が 1 試行である。順序は各 manifest に従う。
+
+```bash
+./dwvp_access.sh experiment \
+  --prepared-session results/dwvp_access/e2_v4_20261014_video_e2/session \
+  --stationary-noise 30
+
+./dwvp_access.sh experiment \
+  --prepared-session results/dwvp_access/e2_v4_20261014_video_dwbC/session \
+  --stationary-noise 30
+```
+
+E2 ではセッションに保存された地図で自己位置推定を行い、Enter 後にその場で
+静止ノイズを測ってから、地図上の固定された開始姿勢へ整列する。経路は再配置しない。
+注意（2026-10-14）：AMCL は既定（update_min_d 0.25 m、update_min_a 0.2 rad）では移動量がしきい値を超えるまで更新しないので、静止中の計測は推定の固定値しか記録せず、推定のばらつきの指標にはならない。原稿の推定ばらつきは実験 1・2 とも、ゴール受理前の最後の 3 s の誤差の標準偏差（運動中）から求めている（原稿リポジトリ `docs/codex_tasks/scratch/e2_final3s_variation.py`）。`--stationary-noise` は TF の鮮度と静止確認の記録として残す。
+
+`--stationary-noise SECONDS` は `experiment` の全モードで使える。
+秒数を省略して引数だけ指定した場合は 30 秒、引数自体を省略した場合は計測しない。
+計測は 30 Hz・map フレームで行う。開始案内の「Enter 後 N 秒は静止」に従い、
+計測終了までロボットを動かさない。終了時には x・y の標準偏差（m）と方位の
+標準偏差（deg）を 1 行で表示する。静止が確認できない場合は、試行へ進まず停止する。
+
+新規 E1 の記録先は `results/dwvp_access/<environment>/run_<ts>/` である。
+その下の `session/` に試行、`session/batches/<ts>/returns/` に帰還を保存する。
+静止ノイズは同じ run の `stationary_noise/` に `noise_samples.csv`、
+`noise_summary.json`、`noise_summary.csv` を保存し、起動ログは
+`stationary_noise.log` に残す。既存 E2 セッションからの実行では、そのセッションに
+隣接する `executions/start_<ts>/stationary_noise/` に保存する。
+再開時は `resumes/resume_<ts>/`、再試行時は `retries/retry_<ts>/` の下に保存する。
+
+撮影中はカメラの位置・画角を固定し、条件間で同じ開始位置と経路が画面に入るようにする。
+Fig. 1 のストロボ合成は撮影後の処理で行う。帰還区間と計測区間は記録に従って区別する。
 
 ## Measured starts and automatic bidirectional trials
 

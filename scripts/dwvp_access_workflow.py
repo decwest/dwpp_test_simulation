@@ -494,17 +494,13 @@ def is_retry(args):
 def run_experiment(args, folder, source):
     resuming = getattr(args, 'resume', None) is not None
     prepared = getattr(args, 'prepared_session', None) is not None
+    one_way = getattr(args, 'one_way', False)
+    noise_duration = getattr(args, 'stationary_noise', None)
     retrying = is_retry(args)
     session = args.resume_session if resuming else args.prepared_session if prepared else folder/'session'
     is_e2 = (resuming or prepared) and fixed_environment(json.loads((session/'manifest.json').read_text()))
     if retrying:
         is_e2 = bool(getattr(args, 'fixed_retry', False))
-        if is_e2:
-            retry = prepare_fixed_retry(args.retry_source, session, args.retry_trial)
-        else:
-            from dwvp_access_batch import prepare_retry
-            retry = prepare_retry(args.retry_source, session, trial_id=getattr(args, 'retry_trial', None))
-        args.params = session/retry['trials'][0]['params_file']
     current_pose_retry = (retrying and not is_e2) or (resuming and 'retry_of' in json.loads((session/'manifest.json').read_text()))
     saved_map = source if resuming or prepared else (copy_fixed_map if is_e2 else copy_map)(source, folder/'map')
     experiment.write_json(folder/'map_input.json', dict(source=str(source), map=str(saved_map),
@@ -517,11 +513,16 @@ def run_experiment(args, folder, source):
         preview = None
         if is_e2:
             from dwvp_access_batch import selected_trials
-            manifest, pending = selected_trials(session, resume=True, continue_on_endpoint_failure=True)
+            preview_session = args.retry_source if retrying else session
+            if retrying:
+                manifest, next_trial, _ = experiment.load_trial(preview_session, args.retry_trial)
+                pending = [next_trial]
+            else:
+                manifest, pending = selected_trials(session, resume=True, continue_on_endpoint_failure=True)
             next_trial = pending[0]
             preview = owned.enter_context(Process(
                 ['ros2', 'run', 'dwpp_test_simulation', 'dwvp_access_experiment.py', 'preview',
-                 '--session', str(session), '--trial', next_trial['id']], folder/'preview.log'))
+                 '--session', str(preview_session), '--trial', next_trial['id']], folder/'preview.log'))
         joy = None if args.no_joy else owned.enter_context(Process(joy_command(), folder/'joy.log'))
         background = [p for p in (localization, preview, joy) if p is not None]
         label = '再試行' if retrying else ('再開' if resuming else '新規実験')
@@ -537,20 +538,46 @@ def run_experiment(args, folder, source):
             print('再試行は現在位置基準です。2件目以降は直前の経路を戻る方向へその場で向き直り、停止後に経路を作ります。\n'
                   '再開の最初の1件は、前回の停止位置から0.5 m以内なら折返し、離れていれば現在の位置・向きから始めます。\n'
                   'F310で経路が収まる位置・向きに合わせ、LBを離してください。', flush=True)
-        wait_enter('RViz の 2D Pose Estimate で初期位置を設定し、レーザと地図を合わせてください。\n'
-                   'LB を離して停止してください。Enter で選択した試行を開始します。' if resuming or retrying or prepared else
-                   'RViz の 2D Pose Estimate で初期位置を設定し、レーザと地図を合わせてください。\n'
-                   'F310 で開始場所へ移動し、LB を離して停止してください。Enter で新規の往復実験を開始します。', background)
+        prompt = 'RViz の 2D Pose Estimate で初期位置を設定し、レーザと地図を合わせてください。\n'
+        if resuming or retrying or prepared:
+            prompt += 'LB を離して停止してください。Enter で選択した試行を開始します。'
+        elif one_way:
+            prompt += 'F310 で開始場所へ移動し、LB を離して停止してください。Enter で同じ開始位置・向きの撮影用試行を開始します。'
+        else:
+            prompt += 'F310 で開始場所へ移動し、LB を離して停止してください。Enter で新規の往復実験を開始します。'
+        if noise_duration is not None:
+            prompt += f'\nEnter 後 {noise_duration:g} 秒は静止してください（静止ノイズを記録してから試行を開始します）。'
+        wait_enter(prompt, background)
         if joy:
             joy.stop()
         if preview:
             preview.stop()
+        if noise_duration is not None:
+            noise_output = folder/'stationary_noise'
+            run_child(['ros2', 'run', 'dwpp_test_simulation', 'dwvp_access_experiment.py', 'stationary-noise',
+                       '--output', str(noise_output), '--duration', str(noise_duration),
+                       '--frequency', '30', '--frame', 'map'],
+                      folder/'stationary_noise.log', [localization], timeout=noise_duration+60)
+            noise = json.loads((noise_output/'noise_summary.json').read_text())
+            print(f'静止ノイズ: SD x={noise["x_std_m"]:.6f} m, y={noise["y_std_m"]:.6f} m, '
+                  f'yaw={noise["heading_std_deg"]:.6f} deg', flush=True)
         capture = stopped_pose()
         check_background([localization])
+        if retrying:
+            if is_e2:
+                retry = prepare_fixed_retry(args.retry_source, session, args.retry_trial)
+            else:
+                from dwvp_access_batch import prepare_retry
+                retry = prepare_retry(args.retry_source, session, trial_id=getattr(args, 'retry_trial', None))
+            args.params = session/retry['trials'][0]['params_file']
         if not resuming and not retrying and not prepared:
             prepare = ['ros2', 'run', 'dwpp_test_simulation', 'dwvp_access_experiment.py', 'prepare',
                        '--output', str(session), '--params', str(args.params),
-                       '--start-from-current', '--bidirectional', '--conditions', *args.conditions]
+                       '--start-from-current', '--conditions', *args.conditions]
+            if not one_way:
+                prepare += ['--bidirectional']
+            if getattr(args, 'ordered', False):
+                prepare += ['--ordered']
             if args.config:
                 prepare += ['--config', str(args.config)]
             if args.repeats:
@@ -562,9 +589,9 @@ def run_experiment(args, folder, source):
         batch = ['ros2', 'run', 'dwpp_test_simulation', 'dwvp_access_batch.py',
                  '--session', str(session), '--map', str(saved_map),
                  '--continue-on-endpoint-failure']
-        if not is_e2:
+        if not is_e2 and not one_way:
             batch += ['--start-from-current']
-        if resuming or prepared or is_e2:
+        if resuming or prepared or is_e2 or one_way:
             # --resume also aligns an entirely unrecorded fixed-path session to
             # its first start, without changing its reference or trial order.
             batch += ['--resume']
@@ -587,6 +614,8 @@ def main():
     p.add_argument('--name', help='Optional environment name; existing names are never overwritten')
     e = sub.add_parser('experiment', help='Localize and run fresh E1 or prepared map-fixed E2 trials')
     previous = e.add_mutually_exclusive_group()
+    previous.add_argument('--one-way', action='store_true',
+                   help='Fresh E1 video session: same frozen start/direction, unscored return after every trial')
     previous.add_argument('--prepared-session', type=Path,
                    help='Start a prepared map-fixed E2 session; uses its adjacent map/map.yaml and frozen route')
     previous.add_argument('--resume', nargs='?', const='latest', type=Path,
@@ -600,9 +629,13 @@ def main():
     e.add_argument('--map', type=Path, help='Override maps/latest.json; relative to the workspace')
     e.add_argument('--params', type=Path, help='Controller template; default is the installed HSR template')
     e.add_argument('--config', type=Path, help='Optional experimental condition configuration')
+    e.add_argument('--ordered', action='store_true', help='With --one-way, keep configured method order for filming')
+    e.add_argument('--stationary-noise', nargs='?', const=30., type=float, metavar='SECONDS',
+                   help='Record stationary map-pose noise after Enter, before trials (default when supplied: 30 s, 30 Hz)')
     e.add_argument('--conditions', nargs='+', choices=['E1', *experiment.CONDITIONS[:-1]],
                    help='Default: all E1 conditions; E2 requires the separate map-fixed workflow')
-    e.add_argument('--repeats', nargs='+', type=int, choices=range(1, 6), help='Default: all five repeats, 65 E1 legs')
+    e.add_argument('--repeats', nargs='+', type=int, choices=range(1, 6),
+                   help='Default: all five repeats (65 E1 legs); --one-way defaults to repeat 1 (13 trials)')
     for command in (p, e):
         command.add_argument('--no-rviz', action='store_true', help='Do not start RViz (e.g. headless verification)')
         command.add_argument('--no-joy', action='store_true', help='Do not start the F310 driver')
@@ -616,6 +649,10 @@ def main():
     args.workspace = args.workspace.resolve()
     source = None
     if args.command == 'experiment':
+        if args.ordered and not args.one_way:
+            parser.error('--ordered requires --one-way')
+        if args.stationary_noise is not None and (not math.isfinite(args.stationary_noise) or args.stationary_noise <= 0):
+            parser.error('--stationary-noise must be a finite positive number of seconds')
         if (args.retry_trial is not None) != (args.source_session is not None):
             parser.error('--retry-trial and --source-session must be supplied together')
         if args.prepared_session is not None:
@@ -664,6 +701,8 @@ def main():
             from ament_index_python.packages import get_package_share_directory
             args.params = args.params or Path(get_package_share_directory('dwpp_test_simulation'))/'params/hsrb_dwvp_access_params.yaml'
             args.conditions = args.conditions or ['E1']
+            if args.one_way and args.repeats is None:
+                args.repeats = [1]
         for name in ('params', 'config'):
             value = getattr(args, name)
             if value is not None:
@@ -689,10 +728,15 @@ def main():
                       'current heading if repositioned more than 0.5 m from the previous stopped position.')
             print('Stopped endpoint misses remain failed; timeout, abort, sensor and stop failures block continuation.')
         elif source:
+            pattern = ('one-way; fixed starts; unscored return after every trial; '
+                       f'ordered={args.ordered}' if args.one_way else
+                       'bidirectional; align then reanchor at each measured stop')
             print(f'Map: {source}\nNew session: results/dwvp_access/{source.parent.name}/run_<JST timestamp>/session\n'
-                  f'Conditions={args.conditions}; repeats={args.repeats or [1,2,3,4,5]}; bidirectional; align then reanchor at each measured stop.')
+                  f'Conditions={args.conditions}; repeats={args.repeats or [1,2,3,4,5]}; {pattern}.')
         else:
             print(f'Map output: maps/{args.name or "lab_<JST timestamp>"}/map.yaml\nSLAM Toolbox + mapping RViz + F310; Enter saves.')
+        if getattr(args, 'stationary_noise', None) is not None:
+            print(f'Stationary noise: {args.stationary_noise:g} s after Enter, 30 Hz, map frame; <run>/stationary_noise/.')
         print('No ROS nodes, motion goals, SSH connections, process stops, or new session files created.')
         return
     if not sys.stdin.isatty():

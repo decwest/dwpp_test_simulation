@@ -36,6 +36,57 @@ def test_balanced_reproducible_80_trial_schedule(tmp_path):
     assert experiment.summarize(tmp_path / 'one')['pending'] == 80
 
 
+def test_ordered_video_manifest_keeps_configured_methods_and_shared_start(tmp_path):
+    params = ROOT/'params/hsrb_dwvp_access_params.yaml'
+    config = experiment.default_config()
+    # A nondefault order proves that the configuration, not controller names,
+    # determines the filmed order within each condition.
+    config['conditions']['E1_orientation_nominal']['methods'] = ['DWVP', 'VP_CLIP', 'VP_SCALED']
+    settings = tmp_path/'config.yaml'
+    settings.write_text(yaml.safe_dump(config))
+    session = tmp_path/'ordered'
+    manifest = experiment.prepare(session, params, current_start=[2., 3., .4],
+        config_file=settings, conditions=['E1'], repeats=[1], ordered=True)
+    assert json.loads((session/'manifest.json').read_text()) == manifest
+    assert manifest['ordered'] is True and not manifest.get('bidirectional')
+    assert len(manifest['trials']) == 13
+    assert [(t['task'], t['controller'], t['repeat']) for t in manifest['trials']] == [
+        (task, method, 1) for task in experiment.E1_CONDITIONS
+        for method in config['conditions'][task]['methods']]
+    for trial in manifest['trials']:
+        assert trial.get('direction', 'forward') == 'forward'
+        np.testing.assert_allclose(experiment.start_pose(manifest, trial), [2., 3., .4])
+        experiment.load_trial(session, trial['id'])
+
+
+def test_prepare_ordered_cli_and_default_shuffle(monkeypatch, tmp_path):
+    import random
+    import sys
+    params = ROOT/'params/hsrb_dwvp_access_params.yaml'
+    session = tmp_path/'cli'
+    monkeypatch.setattr(sys, 'argv', ['experiment', 'prepare', '--output', str(session),
+        '--params', str(params), '--origin', '0', '0', '0', '--conditions', 'E1',
+        '--repeats', '1', '--ordered'])
+    experiment.main()
+    manifest = json.loads((session/'manifest.json').read_text())
+    expected = [(task, method) for task in experiment.E1_CONDITIONS
+                for method in experiment.default_config()['conditions'][task]['methods']]
+    assert manifest['ordered'] and [(t['task'], t['controller']) for t in manifest['trials']] == expected
+    ordinary = experiment.prepare(tmp_path/'ordinary', params, current_start=[0, 0, 0],
+        bidirectional=True, conditions=['E1'])
+    rng = random.Random(20261004)
+    shuffled = []
+    for repeat in range(1, 6):
+        for task in experiment.E1_CONDITIONS:
+            methods = list(experiment.default_config()['conditions'][task]['methods'])
+            rng.shuffle(methods)
+            shuffled.extend((task, method, repeat) for method in methods)
+    assert 'ordered' not in ordinary and len(ordinary['trials']) == 65
+    assert [(t['task'], t['controller'], t['repeat']) for t in ordinary['trials']] == shuffled
+    assert [t['direction'] for t in ordinary['trials']] == [
+        'forward' if i % 2 == 0 else 'reverse' for i in range(65)]
+
+
 def test_condition_geometry_and_configurable_start():
     lateral = experiment.canonical_path('E1_lateral')
     np.testing.assert_allclose(lateral[[0,-1]], [[0,0,0],[2.5,0,0]])

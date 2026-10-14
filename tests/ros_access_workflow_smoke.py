@@ -93,6 +93,8 @@ def interactive(plant, command, logfile, ready, timeout):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--one-way', action='store_true', help='Exercise two ordered filmed response conditions and returns')
+    parser.add_argument('--stationary-noise', type=float, help='Record noise before preparing the synthetic trials')
     args = parser.parse_args()
     assert Path('/.dockerenv').exists() and set(os.listdir('/sys/class/net')) == {'lo'}
     assert os.environ.get('ROS_LOCALHOST_ONLY') == '1'
@@ -100,8 +102,10 @@ def main():
     workspace = out/'workspace'; workspace.mkdir()
     command = [sys.executable, str(ROOT/'scripts/dwvp_access_workflow.py'), '--workspace', str(workspace)]
     config = experiment.default_config()
-    config['conditions']['E1_lateral'].update(methods=['DWVP'], length_m=.8, start_pose=[0.,.2,0.])
-    config['conditions']['E1_lateral']['evaluation']['goal_margin_m'] = .1
+    conditions = list(experiment.RESPONSE_CONDITIONS[:2]) if args.one_way else ['E1_lateral']
+    for name in conditions:
+        config['conditions'][name].update(methods=['DWVP'], length_m=.8, start_pose=[0.,.2,0.])
+        config['conditions'][name]['evaluation']['goal_margin_m'] = .1
     settings = out/'config.yaml'; settings.write_text(yaml.safe_dump(config))
     rclpy.init(); plant = RoomPlant()
     try:
@@ -126,23 +130,47 @@ def main():
                 pose.pose.covariance[35]=.0009
                 plant.initial_pose.publish(pose); sent_pose=time.monotonic()
             return plant.localized and sent_pose is not None and time.monotonic()-sent_pose>2
-        interactive(plant, command+['experiment', '--no-rviz', '--no-joy', '--conditions', 'E1_lateral',
-                    '--repeats', '1', '--config', str(settings)], out/'experiment.log', ready, 130)
+        options = ['--one-way', '--ordered'] if args.one_way else []
+        if args.stationary_noise is not None:
+            options += ['--stationary-noise', str(args.stationary_noise)]
+        interactive(plant, command+['experiment', '--no-rviz', '--no-joy', '--conditions', *conditions,
+                    '--repeats', '1', '--config', str(settings)]+options, out/'experiment.log', ready, 240)
         pointer = json.loads((workspace/'results/dwvp_access/latest.json').read_text())
         session = workspace/pointer['session']
         manifest = json.loads((session/'manifest.json').read_text())
-        assert len(manifest['trials']) == 1 and manifest['bidirectional']
-        result = json.loads(next((session/'runs').glob('*/result.json')).read_text())
-        assert result['success'] and result['reference_policy']=='per_trial_current_pose'
+        assert len(manifest['trials']) == len(conditions)
+        assert bool(manifest.get('bidirectional')) is not args.one_way
+        assert bool(manifest.get('ordered')) is args.one_way
+        for trial in manifest['trials']:
+            result = json.loads((session/'runs'/trial['id']/'result.json').read_text())
+            assert result['success']
+            assert result['reference_policy'] == ('session_fixed' if args.one_way else 'per_trial_current_pose')
+            if args.one_way:
+                _, _, reference = experiment.load_trial(session, trial['id'])
+                np.testing.assert_allclose(np.loadtxt(session/'runs'/trial['id']/'reference.csv',
+                    delimiter=',', skiprows=1), reference)
+                np.testing.assert_allclose(experiment.start_pose(manifest, trial), manifest['measured_start'])
+        if args.one_way:
+            batch = next((session/'batches').iterdir())
+            status = json.loads((batch/'status.json').read_text())
+            assert status['status'] == 'completed' and len(status['returns']) == len(conditions)
+            assert status['reference_policy'] == 'session_fixed'
+        if args.stationary_noise is not None:
+            noise = json.loads((session.parent/'stationary_noise/noise_summary.json').read_text())
+            assert noise['stationary_verified'] and noise['samples'] > 1 and noise['frame'] == 'map'
+            assert noise['requested_duration_s'] == args.stationary_noise
+            log = (out/'experiment.log').read_text()
+            assert log.index('stationary-noise') < log.index(' prepare ') < log.index('dwvp_access_batch.py')
         assert json.loads((session.parent/'workflow.json').read_text())['status']=='completed'
         assert (session.parent/'map/map.pgm').read_bytes() == saved.with_suffix('.pgm').read_bytes()
         spin_for(plant, 3.)
         assert not plant.get_publishers_info_by_topic('/omni_base_controller/cmd_vel')
         assert not plant.get_publishers_info_by_topic('/map')
-        (out/'report.json').write_text(json.dumps(dict(physical_trials=0, synthetic_trials=1,
+        (out/'report.json').write_text(json.dumps(dict(physical_trials=0, synthetic_trials=len(conditions),
+            one_way=args.one_way, stationary_noise_seconds=args.stationary_noise,
             real_slam_and_map_saver=True, real_amcl_and_controller=True,
             timestamped_map=str(saved), timestamped_session=str(session), owned_processes_stopped=True), indent=2)+'\n')
-        print('PASS: newest map -> actual AMCL -> new session -> measured-start batch -> summary and cleanup', flush=True)
+        print('PASS: newest map -> actual AMCL -> new session -> batch -> summary and cleanup', flush=True)
     finally:
         plant.destroy_node(); rclpy.try_shutdown()
 

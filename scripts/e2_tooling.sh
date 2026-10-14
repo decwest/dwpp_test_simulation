@@ -68,7 +68,7 @@ docker run --rm --pull=never --network none --user "$(id -u):$(id -g)" --entrypo
       path) python3 "$tool/scripts/dwvp_access_path.py" "$@" ;;
       check-path) python3 "$tool/scripts/dwvp_access_path.py" check-path "$@" ;;
       sweep|verify) python3 "$tool/scripts/dwvp_access_e2.py" "$command" "$@" ;;
-      test) python3 -m pytest -q -p no:cacheprovider "$tool"/tests/test_access_*.py ;;
+      test) python3 -m pytest -q -p no:cacheprovider "$tool"/tests/test_access_*.py "$@" ;;
       critic-test)
         colcon test --packages-select dwb_path_tracking_critics --event-handlers console_direct+
         colcon test-result --test-result-base build/dwb_path_tracking_critics --verbose ;;
