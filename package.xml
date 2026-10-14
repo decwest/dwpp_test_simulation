@@ -43,6 +43,8 @@
   <exec_depend>dwb_core</exec_depend>
   <exec_depend>dwb_plugins</exec_depend>
   <exec_depend>dwb_critics</exec_depend>
+  <exec_depend>dwb_path_tracking_critics</exec_depend>
+  <exec_depend>nav2_constrained_smoother</exec_depend>
   <exec_depend>nav2_regulated_pure_pursuit_controller</exec_depend>
   <exec_depend>nav2_omnidirectional_dwvp_controller</exec_depend>
   <exec_depend>nav2_dynamic_window_pure_pursuit_controller</exec_depend>

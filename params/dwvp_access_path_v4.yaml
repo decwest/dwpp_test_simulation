@@ -1,0 +1,18 @@
+planner:
+  tolerance: 0.1
+  use_astar: false
+  remove_subcell_cusps: true
+  allow_unknown: false
+  robot_radius_m: 0.22
+  inflation_radius_m: 0.3
+  cost_scaling_factor: 3.0
+smoothing:
+  method: nav2_simple_smoother
+  w_data: 0.2
+  w_smooth: 0.3
+  max_its: 1000
+  tolerance: 1.0e-10
+  do_refinement: true
+  sample_spacing_m: 0.02
+  tangent_half_window_m: 0.1
+inspection_costmap_resolution_m: 0.01

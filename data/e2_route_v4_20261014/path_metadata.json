@@ -1,0 +1,236 @@
+{
+  "frame": "map",
+  "planner": "rounded_route_graph",
+  "graph": {
+    "waypoints": [
+      [
+        2.5,
+        0.05
+      ],
+      [
+        -0.05,
+        0.05
+      ],
+      [
+        -0.05,
+        -2.6
+      ],
+      [
+        2.5,
+        -2.6
+      ]
+    ],
+    "requested_corner_radius_m": 0.3,
+    "corners": [
+      {
+        "kind": "arc",
+        "waypoint_index": 1,
+        "requested_radius_m": 0.3,
+        "radius_m": 0.3,
+        "radius_reduced": false,
+        "centre": [
+          0.24999999999999994,
+          -0.25
+        ],
+        "entry": [
+          0.24999999999999994,
+          0.05
+        ],
+        "exit": [
+          -0.05,
+          -0.24999999999999994
+        ],
+        "start_angle_rad": 1.5707963267948966,
+        "turn_rad": 1.5707963267948966,
+        "start_m": 2.25,
+        "end_m": 2.721238898038469
+      },
+      {
+        "kind": "arc",
+        "waypoint_index": 2,
+        "requested_radius_m": 0.3,
+        "radius_m": 0.3,
+        "radius_reduced": false,
+        "centre": [
+          0.25,
+          -2.3000000000000003
+        ],
+        "entry": [
+          -0.05,
+          -2.3000000000000003
+        ],
+        "exit": [
+          0.24999999999999994,
+          -2.6
+        ],
+        "start_angle_rad": 3.141592653589793,
+        "turn_rad": 1.5707963267948966,
+        "start_m": 4.771238898038469,
+        "end_m": 5.242477796076938
+      }
+    ],
+    "primitives": [
+      {
+        "kind": "line",
+        "start_m": 0.0,
+        "end_m": 2.25,
+        "start": [
+          2.5,
+          0.05
+        ],
+        "direction": [
+          -1.0,
+          0.0
+        ]
+      },
+      {
+        "kind": "arc",
+        "waypoint_index": 1,
+        "requested_radius_m": 0.3,
+        "radius_m": 0.3,
+        "radius_reduced": false,
+        "centre": [
+          0.24999999999999994,
+          -0.25
+        ],
+        "entry": [
+          0.24999999999999994,
+          0.05
+        ],
+        "exit": [
+          -0.05,
+          -0.24999999999999994
+        ],
+        "start_angle_rad": 1.5707963267948966,
+        "turn_rad": 1.5707963267948966,
+        "start_m": 2.25,
+        "end_m": 2.721238898038469
+      },
+      {
+        "kind": "line",
+        "start_m": 2.721238898038469,
+        "end_m": 4.771238898038469,
+        "start": [
+          -0.05,
+          -0.24999999999999994
+        ],
+        "direction": [
+          0.0,
+          -1.0
+        ]
+      },
+      {
+        "kind": "arc",
+        "waypoint_index": 2,
+        "requested_radius_m": 0.3,
+        "radius_m": 0.3,
+        "radius_reduced": false,
+        "centre": [
+          0.25,
+          -2.3000000000000003
+        ],
+        "entry": [
+          -0.05,
+          -2.3000000000000003
+        ],
+        "exit": [
+          0.24999999999999994,
+          -2.6
+        ],
+        "start_angle_rad": 3.141592653589793,
+        "turn_rad": 1.5707963267948966,
+        "start_m": 4.771238898038469,
+        "end_m": 5.242477796076938
+      },
+      {
+        "kind": "line",
+        "start_m": 5.242477796076938,
+        "end_m": 7.492477796076938,
+        "start": [
+          0.24999999999999994,
+          -2.6
+        ],
+        "direction": [
+          1.0,
+          0.0
+        ]
+      }
+    ],
+    "analytic_length_m": 7.492477796076938,
+    "radius_reductions": [],
+    "sampling": "uniform analytic arc length; exact line/circle tangent yaw"
+  },
+  "start": [
+    2.5,
+    0.05,
+    3.141592653589793
+  ],
+  "requested_start": [
+    2.5,
+    0.05,
+    3.141592653589793
+  ],
+  "requested_goal": [
+    2.5,
+    -2.6,
+    0.0
+  ],
+  "start_yaw_minus_csv_yaw_rad": 0.0,
+  "via": [
+    [
+      -0.05,
+      0.05
+    ],
+    [
+      -0.05,
+      -2.6
+    ]
+  ],
+  "facing": {
+    "segment": [
+      [
+        -0.05,
+        -0.8
+      ],
+      [
+        -0.05,
+        -1.8
+      ]
+    ],
+    "yaw_rad": 3.141592653589793,
+    "transition_m": 0.35,
+    "corridor_distance_m": 0.6,
+    "intervals": [
+      {
+        "first_index": 164,
+        "last_index": 213,
+        "start_m": 3.2766246588519365,
+        "end_m": 4.2556417575393235,
+        "transition_start_m": 2.9266246588519365,
+        "transition_end_m": 4.605641757539323
+      }
+    ],
+    "selected_points": 50,
+    "interpolation": "wrapped shortest-angle smoothstep in arc length"
+  },
+  "navfn_segments": 0,
+  "junction_policy": "analytic tangent circular fillets",
+  "terminal_yaw_policy": "forward tangent, including endpoint; requested goal yaw is not retained",
+  "csv_sha256": "7de9eaea01e8777ddee98063475a3ae0e22558806b6afd146535a41479413077",
+  "map_yaml_sha256": "f9411a5fb306834fb8789aef75e40c51a8c3239cbc12bc3b4d894efc34e5b877",
+  "map_image_sha256": "45ad5893dd10cd0bcb6ff56ebf84900bb5020e1607664dc37211048a3c6a41c6",
+  "planner_params_sha256": "b9ca55e4751e6f6bed627ee7b9297eb62b2ca1bc4e9cf0bdf69976865c6f6531",
+  "path_config_sha256": "f0eceadac4fc8ae2593b7fa45e69161abe153a6277dea8e12a608cbbbce88132",
+  "smoothing": null,
+  "footprint_check": "circular footprint against occupied, unknown and outside-map cells",
+  "costmap_ready_before_goal": true,
+  "smoother": null,
+  "smoother_action_completed": false,
+  "removed_subcell_cusps": [],
+  "refinement_num": null,
+  "refinement_note": null,
+  "physical_trials": 0,
+  "path_tool_sha256": "8c0b5d9f58c6cd977fbdb02a5681496060434171ab36182b1dcd8e6ce9660b51",
+  "software_manifest_status": "Uncommitted source; tool SHA256 identifies this generator",
+  "tangent_yaw": "exact analytic derivative"
+}

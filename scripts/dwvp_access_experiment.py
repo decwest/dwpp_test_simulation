@@ -185,7 +185,26 @@ def render_parameters(params, config, condition=None):
             # for unscored returns). Validate names, not schedule membership.
             if name not in CONTROLLERS:
                 raise ValueError('Overrides require a known controller')
+            # Removed DWB plugins no longer declare their tuning parameters.
+            # Remove those stale defaults from this condition's frozen config,
+            # retaining strict verification of every active critic parameter.
+            if name == 'DWB' and 'critics' in updates:
+                removed = set(cs[name].get('critics', [])) - set(updates['critics'])
+                for key in list(cs[name]):
+                    if key in removed or any(key.startswith(critic + '.') for critic in removed):
+                        del cs[name][key]
             merge(cs[name], updates)
+    if condition and 'costmap_inflation_radius_m' in config['conditions'][condition]:
+        radius = config['conditions'][condition]['costmap_inflation_radius_m']
+        if not math.isfinite(radius) or radius <= 0:
+            raise ValueError('Positive finite costmap inflation radius required')
+        for name in ('local_costmap', 'global_costmap'):
+            values[name][name]['ros__parameters']['inflation_layer']['inflation_radius'] = float(radius)
+    if condition and 'local_costmap_resolution_m' in config['conditions'][condition]:
+        resolution = config['conditions'][condition]['local_costmap_resolution_m']
+        if not math.isfinite(resolution) or resolution <= 0:
+            raise ValueError('Positive finite local costmap resolution required')
+        values['local_costmap']['local_costmap']['ros__parameters']['resolution'] = float(resolution)
     # Normalize the selected generator after condition overrides. E1 retains
     # the robot-session standard rollout; E2 can select LimitedAccelGenerator.
     dwb = cs['DWB']
