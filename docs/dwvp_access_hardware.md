@@ -121,7 +121,74 @@ SLAM, RViz and F310, but timestamped saving belongs to the shell entry point.
 Rebuild `hsrb_mapping`, `ytlab2_hsr_modules`, and `dwpp_test_simulation` after adding
 these entry points (`./dwvp_access.sh build` includes them).
 
-## 映像・Fig. 1 用セッション（2026-10-14）
+## Fig. 1 の撮り直し（2026-10-21）
+
+Fig. 1 は左列が横偏差の収束、右列が方位変化区間の走行で、上段が Clipped VP、
+下段が EC-DWVP になった。旧 (a) の映像は EC-DWVP の時定数 1.5 s の試行であるため、
+Clipped VP として再利用しない。参照経路の重ね描きは撮影後に検討する。
+
+既存の撮影機能 `./dwvp_access.sh experiment --one-way --ordered` をそのまま使い、
+今回の条件を `--config` で指定する。新しい起動スクリプトやサブコマンドは不要。
+HSR Humble コンテナ内の `/home/dev/ros2_ws` で、既存のビルドを済ませて実行する。
+条件設定だけの変更なので、今回の追加による再ビルドは不要。
+
+```bash
+# 左列を順に撮る：(a) Clipped VP → (c) EC-DWVP
+./dwvp_access.sh experiment --one-way --ordered \
+  --config src/third_party/dwpp_test_simulation/params/dwvp_access_fig1.yaml \
+  --conditions E1_lateral E1_response_L0p33_T0p5
+
+# (a)だけ撮り直す
+./dwvp_access.sh experiment --one-way --ordered \
+  --config src/third_party/dwpp_test_simulation/params/dwvp_access_fig1.yaml \
+  --conditions E1_lateral
+
+# 右列：(b) Clipped VP → (d) EC-DWVP
+./dwvp_access.sh experiment --one-way --ordered \
+  --config src/third_party/dwpp_test_simulation/params/dwvp_access_fig1.yaml \
+  --conditions E1_orientation_quarter
+
+# 4条件すべて：(a) → (c) → (b) → (d)
+./dwvp_access.sh experiment --one-way --ordered \
+  --config src/third_party/dwpp_test_simulation/params/dwvp_access_fig1.yaml \
+  --conditions E1_lateral E1_response_L0p33_T0p5 E1_orientation_quarter
+```
+
+実行前の確認には同じコマンドへ `--dry-run` を追加する。既存の仕組みが設定ファイルと地図を確認し、
+ROSノードの起動・ロボット接続・セッション生成は行わない。`--one-way` の既定の反復数は1回。
+上記の専用設定には撮影対象だけを含むため、`--conditions` も上記のように明示する。
+
+`--map /path/to/map.yaml` で地図を指定でき、省略時は `maps/latest.json` を使う。
+必要なら `--stationary-noise 30` を付ける。カメラの録画は手動で開始する。
+自己位置推定と開始姿勢を確認して Enter を押すと、各条件を1回ずつ同じ開始姿勢から走行し、
+各試行後に開始姿勢へ帰還する。撮影区間と帰還区間はログで区別する。
+カメラの位置と画角は列ごとの比較で固定し、ストロボ合成間隔は2 sとする。
+
+専用設定 `params/dwvp_access_fig1.yaml` とパネルの対応は以下のとおり。
+`DWVP` は EC-DWVP の実装名、`lateral_time_constant: 0.0` は横偏差補償なしを表す。
+
+| パネル | 試行ID | 設定 |
+| --- | --- | --- |
+| (a) | `E1_lateral_VP_CLIP_r1` | Clipped VP、L = 0.33 m、横偏差補償なし |
+| (c) | `E1_response_L0p33_T0p5_DWVP_r1` | EC-DWVP、L = 0.33 m、時定数0.5 s |
+| (b) | `E1_orientation_quarter_VP_CLIP_r1` | Clipped VP、角加速度上限0.15 rad/s²、横偏差補償なし |
+| (d) | `E1_orientation_quarter_DWVP_r1` | EC-DWVP、角加速度上限0.15 rad/s²、横偏差補償なし |
+
+全条件で経路長2.5 m、経路点間隔0.01 m、所望速度0.22 m/s、並進速度の各成分の上限
+0.22 m/s、角速度上限0.6 rad/s、制御周期1/30 sとする。(a)、(c)は初期横偏差0.5 mで
+経路と平行に開始し、並進加速度上限は各成分0.22 m/s²、角加速度上限は0.6 rad/s²。
+(b)、(d)は経路上から開始し、経路の1.0–1.3 mの区間で参照方位を0°から90°へ線形に変化させる。
+並進加速度上限は各成分0.055 m/s²。前方注視時間0.75 s、前方注視距離の下限0.11 m・上限0.33 mを用いる。
+制御器と後段の速度平滑化には同じ速度・加速度上限を与え、ともに OPEN_LOOP を使う。
+
+既存の条件名を使うが、この撮影設定では `E1_lateral` の手法は Clipped VPだけである。
+採点用の `dwvp_access_experiment.yaml` は変更しない。撮影ログは通常どおり
+`results/dwvp_access/<environment>/run_<timestamp>/session/` に保存され、設定・経路・試行IDも
+そこに固定される。撮影試行を論文の集計表へ追加しない。
+
+## 映像・Fig. 1 用セッション（2026-10-14、旧構成）
+
+以下は旧パネル構成の記録。現在の Fig. 1 の撮り直しには上の条件設定を使う。
 
 以下のコマンドは、ビルドと ROS 環境の読み込みを済ませた HSR コンテナの
 ワークスペースで実行する。映像用の試行は論文の表には使わない。
