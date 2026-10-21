@@ -124,26 +124,29 @@ these entry points (`./dwvp_access.sh build` includes them).
 ## Fig. 1 の撮り直し（2026-10-21）
 
 Fig. 1 は左列が横偏差の収束、右列が方位変化区間の走行で、上段が Clipped VP、
-下段が EC-DWVP になった。旧 (a) の映像は EC-DWVP の時定数 1.5 s の試行であるため、
-Clipped VP として再利用しない。参照経路の重ね描きは撮影後に検討する。
+下段が EC-DWVP。左列 (a)、(c) は L=0.66 m、初期横偏差0.5 mで撮り直す。
+EC-DWVPの時定数は0.5 sのまま。右列 (b)、(d) は以前の写真を使うため、再撮影は不要。
+参照経路の重ね描きは撮影後に検討する。
 
 既存の撮影機能 `./dwvp_access.sh experiment --one-way --ordered` をそのまま使い、
 今回の条件を `--config` で指定する。新しい起動スクリプトやサブコマンドは不要。
-HSR Humble コンテナ内の `/home/dev/ros2_ws` で、既存のビルドを済ませて実行する。
-条件設定だけの変更なので、今回の追加による再ビルドは不要。
+HSR Humble コンテナ内の `/home/dev/ros2_ws` で実行する。
+今回は新しい条件名 `E1_response_L0p66_T0p5` を追加したため、更新後に一度ビルドする。
 
 ```bash
+./dwvp_access.sh build
+
 # 左列を順に撮る：(a) Clipped VP → (c) EC-DWVP
 ./dwvp_access.sh experiment --one-way --ordered \
   --config src/third_party/dwpp_test_simulation/params/dwvp_access_fig1.yaml \
-  --conditions E1_lateral E1_response_L0p33_T0p5
+  --conditions E1_lateral E1_response_L0p66_T0p5
 
 # (a)だけ撮り直す
 ./dwvp_access.sh experiment --one-way --ordered \
   --config src/third_party/dwpp_test_simulation/params/dwvp_access_fig1.yaml \
   --conditions E1_lateral
 
-# 右列：(b) Clipped VP → (d) EC-DWVP
+# 右列も再撮影する場合のみ：(b) Clipped VP → (d) EC-DWVP
 ./dwvp_access.sh experiment --one-way --ordered \
   --config src/third_party/dwpp_test_simulation/params/dwvp_access_fig1.yaml \
   --conditions E1_orientation_quarter
@@ -151,7 +154,7 @@ HSR Humble コンテナ内の `/home/dev/ros2_ws` で、既存のビルドを済
 # 4条件すべて：(a) → (c) → (b) → (d)
 ./dwvp_access.sh experiment --one-way --ordered \
   --config src/third_party/dwpp_test_simulation/params/dwvp_access_fig1.yaml \
-  --conditions E1_lateral E1_response_L0p33_T0p5 E1_orientation_quarter
+  --conditions E1_lateral E1_response_L0p66_T0p5 E1_orientation_quarter
 ```
 
 実行前の確認には同じコマンドへ `--dry-run` を追加する。既存の仕組みが設定ファイルと地図を確認し、
@@ -169,8 +172,8 @@ ROSノードの起動・ロボット接続・セッション生成は行わな�
 
 | パネル | 試行ID | 設定 |
 | --- | --- | --- |
-| (a) | `E1_lateral_VP_CLIP_r1` | Clipped VP、L = 0.33 m、横偏差補償なし |
-| (c) | `E1_response_L0p33_T0p5_DWVP_r1` | EC-DWVP、L = 0.33 m、時定数0.5 s |
+| (a) | `E1_lateral_VP_CLIP_r1` | Clipped VP、L = 0.66 m、横偏差補償なし |
+| (c) | `E1_response_L0p66_T0p5_DWVP_r1` | EC-DWVP、L = 0.66 m、時定数0.5 s |
 | (b) | `E1_orientation_quarter_VP_CLIP_r1` | Clipped VP、角加速度上限0.15 rad/s²、横偏差補償なし |
 | (d) | `E1_orientation_quarter_DWVP_r1` | EC-DWVP、角加速度上限0.15 rad/s²、横偏差補償なし |
 
@@ -181,7 +184,8 @@ ROSノードの起動・ロボット接続・セッション生成は行わな�
 並進加速度上限は各成分0.055 m/s²。前方注視時間0.75 s、前方注視距離の下限0.11 m・上限0.33 mを用いる。
 制御器と後段の速度平滑化には同じ速度・加速度上限を与え、ともに OPEN_LOOP を使う。
 
-既存の条件名を使うが、この撮影設定では `E1_lateral` の手法は Clipped VPだけである。
+この撮影設定では `E1_lateral` の手法は Clipped VPだけである。
+`E1_response_L0p66_T0p5` は撮影専用であり、既定の `E1` 試行群には含まれない。
 採点用の `dwvp_access_experiment.yaml` は変更しない。撮影ログは通常どおり
 `results/dwvp_access/<environment>/run_<timestamp>/session/` に保存され、設定・経路・試行IDも
 そこに固定される。撮影試行を論文の集計表へ追加しない。

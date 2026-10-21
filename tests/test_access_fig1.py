@@ -18,13 +18,15 @@ def test_fig1_frozen_trials_match_panels_and_share_starts(tmp_path):
     manifest = experiment.prepare(
         session, ROOT/'params/hsrb_dwvp_access_params.yaml',
         config_file=ROOT/'params/dwvp_access_fig1.yaml', current_start=[2., 3., .4],
-        conditions=['E1_lateral', 'E1_response_L0p33_T0p5', 'E1_orientation_quarter'],
+        conditions=['E1_lateral', 'E1_response_L0p66_T0p5', 'E1_orientation_quarter'],
         repeats=[1], ordered=True)
     assert manifest == json.loads((session/'manifest.json').read_text())
     assert manifest['ordered'] and not manifest.get('bidirectional')
     assert [(t['task'], t['controller']) for t in manifest['trials']] == [
-        ('E1_lateral', 'VP_CLIP'), ('E1_response_L0p33_T0p5', 'DWVP'),
+        ('E1_lateral', 'VP_CLIP'), ('E1_response_L0p66_T0p5', 'DWVP'),
         ('E1_orientation_quarter', 'VP_CLIP'), ('E1_orientation_quarter', 'DWVP')]
+    assert 'E1_response_L0p66_T0p5' not in experiment.E1_CONDITIONS
+    assert 'E1_response_L0p66_T0p5' not in experiment.DEFAULT_CONDITIONS
     for index, trial in enumerate(manifest['trials']):
         experiment.load_trial(session, trial['id'])
         np.testing.assert_allclose(experiment.start_pose(manifest, trial), [2., 3., .4])
@@ -43,12 +45,12 @@ def test_fig1_frozen_trials_match_panels_and_share_starts(tmp_path):
         assert ctrl['vp_translation_speed'] == .22
         assert cs['controller_frequency'] == 30.
         if index < 2:
-            assert ctrl['min_lookahead_dist'] == ctrl['max_lookahead_dist'] == .33
+            assert ctrl['min_lookahead_dist'] == ctrl['max_lookahead_dist'] == ctrl['lookahead_dist'] == .66
         else:
             assert (ctrl['lookahead_time'], ctrl['min_lookahead_dist'], ctrl['max_lookahead_dist']) == (.75, .11, .33)
     config = yaml.safe_load((session/'experiment_config.yaml').read_text())
     np.testing.assert_array_equal(experiment.canonical_path('E1_lateral', config),
-                                  experiment.canonical_path('E1_response_L0p33_T0p5', config))
+                                  experiment.canonical_path('E1_response_L0p66_T0p5', config))
     ramp = experiment.canonical_path('E1_orientation_quarter', config)
     np.testing.assert_allclose(ramp[[0, 100, 115, 130, -1]],
         [[0, 0, 0], [1, 0, 0], [1.15, 0, np.pi/4], [1.3, 0, np.pi/2], [2.5, 0, np.pi/2]])

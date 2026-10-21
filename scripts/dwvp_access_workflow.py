@@ -632,7 +632,7 @@ def main():
     e.add_argument('--ordered', action='store_true', help='With --one-way, keep configured method order for filming')
     e.add_argument('--stationary-noise', nargs='?', const=30., type=float, metavar='SECONDS',
                    help='Record stationary map-pose noise after Enter, before trials (default when supplied: 30 s, 30 Hz)')
-    e.add_argument('--conditions', nargs='+', choices=['E1', *experiment.CONDITIONS[:-1]],
+    e.add_argument('--conditions', nargs='+', choices=['E1', *experiment.SUPPORTED_CONDITIONS[:-1]],
                    help='Default: all E1 conditions; E2 requires the separate map-fixed workflow')
     e.add_argument('--repeats', nargs='+', type=int, choices=range(1, 6),
                    help='Default: all five repeats (65 E1 legs); --one-way defaults to repeat 1 (13 trials)')

@@ -186,10 +186,10 @@ def selected_trials(session, conditions=None, repeats=None, resume=False, contin
     manifest = json.loads((Path(session) / 'manifest.json').read_text())
     if 'retry_of' in manifest:
         validate_retry_manifest(session, manifest)
-    requested = conditions or list(experiment.CONDITIONS)
+    requested = conditions or list(experiment.SUPPORTED_CONDITIONS)
     requested = [c for item in requested for c in
                  (experiment.E1_CONDITIONS if item == 'E1' else [item])]
-    if not set(requested) <= set(experiment.CONDITIONS):
+    if not set(requested) <= set(experiment.SUPPORTED_CONDITIONS):
         raise ValueError('Unknown condition selection')
     if repeats is not None and (not repeats or not set(repeats) <= set(range(1, 6))):
         raise ValueError('Repeats must be in 1..5')
@@ -948,7 +948,7 @@ def main():
         print(json.dumps(result, indent=2), flush=True)
         raise SystemExit(0 if result.get('success') is True else 1)
     parser.add_argument('--map', type=Path, required=True, help='Must match the map served by localization')
-    parser.add_argument('--conditions', nargs='+', choices=['E1', *experiment.CONDITIONS])
+    parser.add_argument('--conditions', nargs='+', choices=['E1', *experiment.SUPPORTED_CONDITIONS])
     parser.add_argument('--repeats', type=int, nargs='+')
     parser.add_argument('--resume', action='store_true',
                         help='Skip only the successful recorded prefix; align to the next frozen start before continuing')

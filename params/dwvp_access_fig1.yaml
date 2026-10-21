@@ -1,4 +1,5 @@
 # Fig. 1 filming preset, 2026-10-21. Separate from the scored experiment settings.
+# Lateral panels revised to L=0.66 m after the filming-candidate simulation.
 # Panel order: (a), (c), (b), (d). DWVP is the implementation name of EC-DWVP.
 schema_version: 3
 common:
@@ -29,14 +30,14 @@ conditions:
     start_pose: [0.0, 0.5, 0.0]
     controller_overrides:
       VP_CLIP:
-        min_lookahead_dist: 0.33
-        max_lookahead_dist: 0.33
-        lookahead_dist: 0.33
+        min_lookahead_dist: 0.66
+        max_lookahead_dist: 0.66
+        lookahead_dist: 0.66
         lateral_time_constant: 0.0
         use_dynamic_window_vector_pursuit: false
         velocity_feedback: OPEN_LOOP
   # (c): same path and limits as (a), with the designed lateral time constant.
-  E1_response_L0p33_T0p5:
+  E1_response_L0p66_T0p5:
     evaluation: {start_m: 0.0, goal_margin_m: 0.6}
     methods: [DWVP]
     acceleration_scale: 1.0
@@ -45,9 +46,9 @@ conditions:
     start_pose: [0.0, 0.5, 0.0]
     controller_overrides:
       DWVP:
-        min_lookahead_dist: 0.33
-        max_lookahead_dist: 0.33
-        lookahead_dist: 0.33
+        min_lookahead_dist: 0.66
+        max_lookahead_dist: 0.66
+        lookahead_dist: 0.66
         lateral_time_constant: 0.5
         use_dynamic_window_vector_pursuit: true
         velocity_feedback: OPEN_LOOP

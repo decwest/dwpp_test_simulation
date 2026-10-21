@@ -104,9 +104,12 @@ LEGACY_CONDITIONS = ('E1_lateral', 'E1_orientation_nominal', 'E1_orientation_hal
                      'E1_orientation_quarter', 'E2_environment')
 RESPONSE_CONDITIONS = ('E1_response_L0p11_T0p5', 'E1_response_L0p11_T1p5',
                        'E1_response_L0p33_T0p5', 'E1_response_L0p33_T1p5')
+# Explicit filming-only selections must not enter the scored E1/default grid.
+FILMING_RESPONSE_CONDITIONS = ('E1_response_L0p66_T0p5',)
 E1_CONDITIONS = (*RESPONSE_CONDITIONS, *LEGACY_CONDITIONS[1:-1])
 DEFAULT_CONDITIONS = (*E1_CONDITIONS, 'E2_environment')
 CONDITIONS = ('E1_lateral', *DEFAULT_CONDITIONS)
+SUPPORTED_CONDITIONS = ('E1_lateral', *FILMING_RESPONSE_CONDITIONS, *DEFAULT_CONDITIONS)
 
 
 def default_config():
@@ -227,7 +230,7 @@ def canonical_path(name, config=None):
         if not np.isfinite(length) or length <= 0:
             raise ValueError('Path dimensions must be positive and finite')
         return np.linspace(0, length, max(2, int(math.ceil(length / spacing)) + 1))
-    if name == 'E1_lateral' or name in RESPONSE_CONDITIONS:
+    if name == 'E1_lateral' or name in (*RESPONSE_CONDITIONS, *FILMING_RESPONSE_CONDITIONS):
         x = samples(settings['length_m'])
         return np.c_[x, np.zeros(len(x)), np.zeros(len(x))]
     if name in ('E1_orientation_nominal', 'E1_orientation_half', 'E1_orientation_quarter'):
@@ -314,7 +317,7 @@ def prepare(output, params, origin=None, environment_path=None, seed=20261004, c
             *, current_start=None, bidirectional=False, conditions=None, repeats=None, ordered=False):
     import yaml
     config = yaml.safe_load(Path(config_file).read_text()) if config_file else default_config()
-    available = tuple(name for name in CONDITIONS if name in config['conditions'])
+    available = tuple(name for name in SUPPORTED_CONDITIONS if name in config['conditions'])
     if current_start is not None:
         if origin is not None:
             raise ValueError('Choose --origin or a measured current start, not both')
@@ -423,7 +426,7 @@ def prepare(output, params, origin=None, environment_path=None, seed=20261004, c
     trials = []
     rng = random.Random(seed)
     for repeat in selected_repeats:
-        for task in CONDITIONS:
+        for task in SUPPORTED_CONDITIONS:
             if task not in selected_conditions:
                 continue
             methods = list(config['conditions'][task]['methods'])
@@ -1125,7 +1128,7 @@ def main():
     p.add_argument('--seed', type=int, default=20261004)
     p.add_argument('--bidirectional', action='store_true', help='Score alternating forward/reverse legs; freeze their starts')
     p.add_argument('--ordered', action='store_true', help='Keep each condition\'s configured methods order without shuffling')
-    p.add_argument('--conditions', nargs='+', choices=['E1', *CONDITIONS])
+    p.add_argument('--conditions', nargs='+', choices=['E1', *SUPPORTED_CONDITIONS])
     p.add_argument('--repeats', type=int, nargs='+', help='Freeze only these repetitions (1..5)')
     for command in ('run', 'preflight'):
         p = commands.add_parser(command)
