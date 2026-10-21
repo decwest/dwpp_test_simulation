@@ -34,10 +34,12 @@ install(PROGRAMS
   scripts/dwvp_access_path.py
   scripts/dwvp_access_batch.py
   scripts/dwvp_access_workflow.py
+  scripts/dwvp_actuation_step.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
 install(FILES scripts/dwvp_access_metrics.py scripts/dwvp_access_noise.py
+  scripts/dwvp_actuation_metrics.py
   scripts/dwvp_access_runtime.py scripts/dwvp_access_robot_teleop.py DESTINATION lib/${PROJECT_NAME})
 
 if(BUILD_TESTING)

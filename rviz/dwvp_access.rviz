@@ -1,149 +1,665 @@
 Panels:
   - Class: rviz_common/Displays
+    Help Height: 138
     Name: Displays
+    Property Tree Widget:
+      Expanded: ~
+      Splitter Ratio: 0.5
+    Tree Height: 593
   - Class: rviz_common/Tool Properties
+    Expanded: ~
     Name: Tool Properties
+    Splitter Ratio: 0.5
   - Class: rviz_common/Views
+    Expanded:
+      - /Current View1
     Name: Views
+    Splitter Ratio: 0.5
 Visualization Manager:
   Class: ""
-  Global Options:
-    Background Color: 48; 48; 48
-    Fixed Frame: map
-    Frame Rate: 30
   Displays:
-    - Class: rviz_default_plugins/Grid
-      Name: Grid
-      Enabled: true
+    - Alpha: 0.5
       Cell Size: 1
+      Class: rviz_default_plugins/Grid
+      Color: 160; 160; 164
+      Enabled: true
+      Line Style:
+        Line Width: 0.029999999329447746
+        Value: Lines
+      Name: Grid
+      Normal Cell Count: 0
+      Offset:
+        X: 0
+        Y: 0
+        Z: 0
+      Plane: XY
       Plane Cell Count: 20
       Reference Frame: <Fixed Frame>
-    - Class: rviz_default_plugins/Map
-      Name: Map
-      Enabled: true
-      Alpha: 0.7
+      Value: true
+    - Alpha: 0.699999988079071
+      Class: rviz_default_plugins/Map
       Color Scheme: map
+      Draw Behind: false
+      Enabled: true
+      Name: Map
       Topic:
-        Value: /map
         Depth: 1
         Durability Policy: Transient Local
+        Filter size: 10
         History Policy: Keep Last
         Reliability Policy: Reliable
+        Value: /map
       Update Topic:
-        Value: /map_updates
         Depth: 10
         Durability Policy: Volatile
         History Policy: Keep Last
         Reliability Policy: Reliable
-    - Class: rviz_default_plugins/LaserScan
-      Name: Laser scan
-      Enabled: true
-      Size (m): 0.025
-      Style: Points
-      Color Transformer: FlatColor
+        Value: /map_updates
+      Use Timestamp: false
+      Value: true
+    - Alpha: 1
+      Autocompute Intensity Bounds: true
+      Autocompute Value Bounds:
+        Max Value: 10
+        Min Value: -10
+        Value: true
+      Axis: Z
+      Channel Name: intensity
+      Class: rviz_default_plugins/LaserScan
       Color: 255; 70; 70
+      Color Transformer: FlatColor
+      Decay Time: 0
+      Enabled: true
+      Invert Rainbow: false
+      Max Color: 255; 255; 255
+      Max Intensity: 4096
+      Min Color: 0; 0; 0
+      Min Intensity: 0
+      Name: Laser scan
       Position Transformer: XYZ
+      Selectable: true
+      Size (Pixels): 3
+      Size (m): 0.02500000037252903
+      Style: Points
       Topic:
-        Value: /scan
         Depth: 5
         Durability Policy: Volatile
+        Filter size: 10
         History Policy: Keep Last
         Reliability Policy: Best Effort
-    - Class: rviz_default_plugins/Path
-      Name: Frozen reference
-      Enabled: true
+        Value: /scan
+      Use Fixed Frame: true
+      Use rainbow: true
+      Value: true
+    - Alpha: 1
+      Buffer Length: 1
+      Class: rviz_default_plugins/Path
       Color: 0; 220; 255
-      Alpha: 1
-      Buffer Length: 1
+      Enabled: true
+      Head Diameter: 0.02500000037252903
+      Head Length: 0.02500000037252903
+      Length: 0.30000001192092896
       Line Style: Billboards
-      Line Width: 0.02
-      Pose Style: Arrows
+      Line Width: 0.019999999552965164
+      Name: Frozen reference
+      Offset:
+        X: 0
+        Y: 0
+        Z: 0
       Pose Color: 255; 210; 0
-      Shaft Length: 0.06
-      Shaft Diameter: 0.01
-      Head Length: 0.025
-      Head Diameter: 0.025
-      Topic:
-        Value: /dwvp_access/reference_path
-        Depth: 1
-        Durability Policy: Transient Local
-        History Policy: Keep Last
-        Reliability Policy: Reliable
-    - Class: rviz_default_plugins/Path
-      Name: Unscored positioning
-      Enabled: true
-      Color: 230; 100; 230
-      Alpha: 1
-      Buffer Length: 1
-      Line Style: Billboards
-      Line Width: 0.02
       Pose Style: Arrows
-      Pose Color: 230; 100; 230
-      Shaft Length: 0.06
-      Shaft Diameter: 0.01
-      Head Length: 0.025
-      Head Diameter: 0.025
+      Radius: 0.029999999329447746
+      Shaft Diameter: 0.009999999776482582
+      Shaft Length: 0.05999999865889549
       Topic:
-        Value: /dwvp_access/return_path
         Depth: 1
         Durability Policy: Transient Local
+        Filter size: 10
         History Policy: Keep Last
         Reliability Policy: Reliable
-    - Class: rviz_default_plugins/Pose
-      Name: Required condition start
+        Value: /dwvp_access/reference_path
+      Value: true
+    - Alpha: 1
+      Buffer Length: 1
+      Class: rviz_default_plugins/Path
+      Color: 230; 100; 230
       Enabled: true
-      Shape: Arrow
-      Color: 100; 255; 100
+      Head Diameter: 0.02500000037252903
+      Head Length: 0.02500000037252903
+      Length: 0.30000001192092896
+      Line Style: Billboards
+      Line Width: 0.019999999552965164
+      Name: Unscored positioning
+      Offset:
+        X: 0
+        Y: 0
+        Z: 0
+      Pose Color: 230; 100; 230
+      Pose Style: Arrows
+      Radius: 0.029999999329447746
+      Shaft Diameter: 0.009999999776482582
+      Shaft Length: 0.05999999865889549
       Topic:
-        Value: /dwvp_access/start_pose
         Depth: 1
         Durability Policy: Transient Local
+        Filter size: 10
         History Policy: Keep Last
         Reliability Policy: Reliable
+        Value: /dwvp_access/return_path
+      Value: true
+    - Alpha: 1
+      Axes Length: 1
+      Axes Radius: 0.10000000149011612
+      Class: rviz_default_plugins/Pose
+      Color: 100; 255; 100
+      Enabled: true
+      Head Length: 0.30000001192092896
+      Head Radius: 0.10000000149011612
+      Name: Required condition start
+      Shaft Length: 1
+      Shaft Radius: 0.05000000074505806
+      Shape: Arrow
+      Topic:
+        Depth: 1
+        Durability Policy: Transient Local
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /dwvp_access/start_pose
+      Value: true
     - Class: rviz_default_plugins/TF
-      Name: TF
-      Enabled: false
+      Enabled: true
       Frame Timeout: 15
-      Marker Scale: 0.3
+      Frames:
+        All Enabled: true
+        arm_flex_link:
+          Value: true
+        arm_lift_link:
+          Value: true
+        arm_roll_link:
+          Value: true
+        base_b_bumper_link:
+          Value: true
+        base_f_bumper_link:
+          Value: true
+        base_footprint:
+          Value: true
+        base_footprint_wheel:
+          Value: true
+        base_imu_frame:
+          Value: true
+        base_l_drive_wheel_link:
+          Value: true
+        base_l_passive_wheel_x_frame:
+          Value: true
+        base_l_passive_wheel_y_frame:
+          Value: true
+        base_l_passive_wheel_z_link:
+          Value: true
+        base_link:
+          Value: true
+        base_r_drive_wheel_link:
+          Value: true
+        base_r_passive_wheel_x_frame:
+          Value: true
+        base_r_passive_wheel_y_frame:
+          Value: true
+        base_r_passive_wheel_z_link:
+          Value: true
+        base_range_sensor_link:
+          Value: true
+        base_roll_link:
+          Value: true
+        hand_camera_frame:
+          Value: true
+        hand_camera_gazebo_frame:
+          Value: true
+        hand_l_distal_link:
+          Value: true
+        hand_l_finger_tip_frame:
+          Value: true
+        hand_l_finger_vacuum_frame:
+          Value: true
+        hand_l_mimic_distal_link:
+          Value: true
+        hand_l_proximal_link:
+          Value: true
+        hand_l_spring_proximal_link:
+          Value: true
+        hand_motor_dummy_link:
+          Value: true
+        hand_palm_link:
+          Value: true
+        hand_r_distal_link:
+          Value: true
+        hand_r_finger_tip_frame:
+          Value: true
+        hand_r_mimic_distal_link:
+          Value: true
+        hand_r_proximal_link:
+          Value: true
+        hand_r_spring_proximal_link:
+          Value: true
+        head_center_camera_frame:
+          Value: true
+        head_center_camera_gazebo_frame:
+          Value: true
+        head_l_stereo_camera_frame:
+          Value: true
+        head_l_stereo_camera_gazebo_frame:
+          Value: true
+        head_l_stereo_camera_link:
+          Value: true
+        head_pan_link:
+          Value: true
+        head_r_stereo_camera_gazebo_frame:
+          Value: true
+        head_r_stereo_camera_link:
+          Value: true
+        head_rgbd_sensor_depth_frame:
+          Value: true
+        head_rgbd_sensor_gazebo_frame:
+          Value: true
+        head_rgbd_sensor_link:
+          Value: true
+        head_rgbd_sensor_rgb_frame:
+          Value: true
+        head_tilt_link:
+          Value: true
+        map:
+          Value: true
+        odom:
+          Value: true
+        torso_lift_link:
+          Value: true
+        wrist_flex_link:
+          Value: true
+        wrist_ft_sensor_frame:
+          Value: true
+        wrist_ft_sensor_mount_link:
+          Value: true
+        wrist_roll_link:
+          Value: true
+      Marker Scale: 0.30000001192092896
+      Name: TF
       Show Arrows: true
       Show Axes: true
       Show Names: true
-    - Class: rviz_default_plugins/RobotModel
-      Name: Robot model
-      Enabled: false
+      Tree:
+        map:
+          odom:
+            base_footprint:
+              base_link:
+                arm_lift_link:
+                  arm_flex_link:
+                    arm_roll_link:
+                      wrist_flex_link:
+                        wrist_ft_sensor_mount_link:
+                          wrist_ft_sensor_frame:
+                            wrist_roll_link:
+                              hand_palm_link:
+                                hand_camera_frame:
+                                  hand_camera_gazebo_frame:
+                                    {}
+                                hand_l_proximal_link:
+                                  hand_l_spring_proximal_link:
+                                    hand_l_mimic_distal_link:
+                                      hand_l_distal_link:
+                                        hand_l_finger_tip_frame:
+                                          {}
+                                        hand_l_finger_vacuum_frame:
+                                          {}
+                                hand_motor_dummy_link:
+                                  {}
+                                hand_r_proximal_link:
+                                  hand_r_spring_proximal_link:
+                                    hand_r_mimic_distal_link:
+                                      hand_r_distal_link:
+                                        hand_r_finger_tip_frame:
+                                          {}
+                base_b_bumper_link:
+                  {}
+                base_f_bumper_link:
+                  {}
+                base_imu_frame:
+                  {}
+                base_range_sensor_link:
+                  {}
+                base_roll_link:
+                  base_l_drive_wheel_link:
+                    {}
+                  base_l_passive_wheel_x_frame:
+                    base_l_passive_wheel_y_frame:
+                      base_l_passive_wheel_z_link:
+                        {}
+                  base_r_drive_wheel_link:
+                    {}
+                  base_r_passive_wheel_x_frame:
+                    base_r_passive_wheel_y_frame:
+                      base_r_passive_wheel_z_link:
+                        {}
+                torso_lift_link:
+                  head_pan_link:
+                    head_tilt_link:
+                      head_center_camera_frame:
+                        head_center_camera_gazebo_frame:
+                          {}
+                      head_l_stereo_camera_link:
+                        head_l_stereo_camera_frame:
+                          head_rgbd_sensor_rgb_frame:
+                            head_rgbd_sensor_depth_frame:
+                              {}
+                        head_l_stereo_camera_gazebo_frame:
+                          {}
+                      head_r_stereo_camera_link:
+                        head_r_stereo_camera_gazebo_frame:
+                          {}
+                      head_rgbd_sensor_link:
+                        head_rgbd_sensor_gazebo_frame:
+                          {}
+            base_footprint_wheel:
+              {}
+      Update Interval: 0
+      Value: true
+    - Alpha: 1
+      Class: rviz_default_plugins/RobotModel
+      Collision Enabled: false
+      Description File: ""
       Description Source: Topic
       Description Topic:
-        Value: /robot_description
         Depth: 1
         Durability Policy: Transient Local
         History Policy: Keep Last
         Reliability Policy: Reliable
+        Value: /robot_description
+      Enabled: true
+      Links:
+        All Links Enabled: true
+        Expand Joint Details: false
+        Expand Link Details: false
+        Expand Tree: false
+        Link Tree Style: Links in Alphabetic Order
+        arm_flex_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        arm_lift_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        arm_roll_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        base_b_bumper_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        base_f_bumper_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        base_footprint:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        base_imu_frame:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        base_l_drive_wheel_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        base_l_passive_wheel_x_frame:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        base_l_passive_wheel_y_frame:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        base_l_passive_wheel_z_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        base_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        base_r_drive_wheel_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        base_r_passive_wheel_x_frame:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        base_r_passive_wheel_y_frame:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        base_r_passive_wheel_z_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        base_range_sensor_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        base_roll_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        hand_camera_frame:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        hand_camera_gazebo_frame:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        hand_l_distal_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        hand_l_finger_tip_frame:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        hand_l_finger_vacuum_frame:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        hand_l_mimic_distal_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        hand_l_proximal_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        hand_l_spring_proximal_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        hand_motor_dummy_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        hand_palm_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        hand_r_distal_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        hand_r_finger_tip_frame:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        hand_r_mimic_distal_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        hand_r_proximal_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        hand_r_spring_proximal_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        head_center_camera_frame:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        head_center_camera_gazebo_frame:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        head_l_stereo_camera_gazebo_frame:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        head_l_stereo_camera_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        head_pan_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        head_r_stereo_camera_gazebo_frame:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        head_r_stereo_camera_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        head_rgbd_sensor_gazebo_frame:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        head_rgbd_sensor_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        head_tilt_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        torso_lift_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        wrist_flex_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        wrist_ft_sensor_frame:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        wrist_ft_sensor_mount_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        wrist_roll_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+      Mass Properties:
+        Inertia: false
+        Mass: false
+      Name: Robot model
+      TF Prefix: ""
+      Update Interval: 0
+      Value: true
       Visual Enabled: true
-      Collision Enabled: false
+  Enabled: true
+  Global Options:
+    Background Color: 48; 48; 48
+    Fixed Frame: map
+    Frame Rate: 30
+  Name: root
   Tools:
     - Class: rviz_default_plugins/Interact
+      Hide Inactive Objects: true
     - Class: rviz_default_plugins/MoveCamera
     - Class: rviz_default_plugins/Select
     - Class: rviz_default_plugins/Measure
+      Line color: 128; 128; 0
     - Class: rviz_default_plugins/SetInitialPose
+      Covariance x: 0.25
+      Covariance y: 0.25
+      Covariance yaw: 0.06853891909122467
       Topic:
-        Value: /initialpose
         Depth: 1
         Durability Policy: Volatile
         History Policy: Keep Last
         Reliability Policy: Reliable
-      Covariance x: 0.25
-      Covariance y: 0.25
-      Covariance yaw: 0.06853891945200942
+        Value: /initialpose
+  Transformation:
+    Current:
+      Class: rviz_default_plugins/TF
+  Value: true
   Views:
     Current:
+      Angle: 2.4149985313415527
       Class: rviz_default_plugins/TopDownOrtho
+      Enable Stereo Rendering:
+        Stereo Eye Separation: 0.05999999865889549
+        Stereo Focal Distance: 1
+        Swap Stereo Eyes: false
+        Value: false
+      Invert Z Axis: false
       Name: Current View
+      Near Clip Distance: 0.009999999776482582
+      Scale: 388.2062072753906
       Target Frame: <Fixed Frame>
-      Scale: 90
-      Angle: 0
-      X: 0
-      Y: 0
+      Value: TopDownOrtho (rviz_default_plugins)
+      X: 1.5519657135009766
+      Y: -1.479907512664795
+    Saved: ~
 Window Geometry:
-  Width: 1280
-  Height: 800
+  Displays:
+    collapsed: false
+  Height: 2022
+  Hide Left Dock: false
+  Hide Right Dock: false
+  QMainWindow State: 000000ff00000000fd0000000100000000000002d800000754fc0200000003fb000000100044006900730070006c00610079007301000000690000033f0000017800fffffffb0000001e0054006f006f006c002000500072006f007000650072007400690065007301000003b40000017a000000ab00fffffffb0000000a00560069006500770073010000053a000002830000012300ffffff00000b980000075400000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
+  Tool Properties:
+    collapsed: false
+  Views:
+    collapsed: false
+  Width: 3708
+  X: 132
+  Y: 64

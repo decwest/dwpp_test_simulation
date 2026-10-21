@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """One-terminal mapping, current-pose E1 and prepared map-fixed E2 experiments."""
 import argparse
+import copy
 from collections import Counter
 from contextlib import ExitStack
 from datetime import datetime
@@ -28,6 +29,37 @@ from dwvp_access_path import load_map
 
 def timestamp():
     return datetime.now(ZoneInfo('Asia/Tokyo')).strftime('%Y%m%d_%H%M%S')
+
+
+def e1_manual_stop_config(config_file, conditions):
+    """Freeze an explicitly selected E1 protocol with operator emergency stop.
+
+    DWVP also performs unscored positioning, so its settings must agree across
+    every selected condition. Existing sessions and E2 settings are not edited.
+    """
+    config = yaml.safe_load(Path(config_file).read_text()) if config_file else experiment.default_config()
+    selected = list(dict.fromkeys(c for item in conditions for c in
+                                  (experiment.E1_CONDITIONS if item == 'E1' else [item])))
+    supported = {'DWVP', 'VP_SCALED', 'VP_CLIP', 'DWPP'}
+    if not selected or any(c == 'E2_environment' or c not in experiment.SUPPORTED_CONDITIONS for c in selected):
+        raise ValueError('Manual emergency stop profile supports E1 conditions only')
+    for condition in selected:
+        settings = copy.deepcopy(config['conditions'][condition])
+        config['conditions'][condition] = settings
+        if not set(settings['methods']) <= supported:
+            raise ValueError('Manual emergency stop profile requires DWVP/VP_SCALED/VP_CLIP/DWPP')
+        overrides = settings.setdefault('controller_overrides', {})
+        for controller in sorted(set(settings['methods']) | {'DWVP'}):
+            updates = overrides.setdefault(controller, {})
+            updates.update(use_collision_detection=False, use_cost_regulated_linear_velocity_scaling=False)
+            if controller != 'DWPP':
+                updates['use_collision_detection_for_omni'] = False
+    config['obstacle_intervention_policy'] = dict(
+        mode='e1_operator_emergency_stop', conditions=selected,
+        collision_prediction_stop=False, obstacle_cost_speed_scaling=False,
+        applies_to='scored E1 trials and unscored DWVP positioning',
+        operator_requirement='Operator monitors the clear experiment area with the physical emergency stop in hand')
+    return config
 
 
 def new_directory(parent, prefix, name=None):
@@ -497,6 +529,9 @@ def run_experiment(args, folder, source):
     one_way = getattr(args, 'one_way', False)
     noise_duration = getattr(args, 'stationary_noise', None)
     retrying = is_retry(args)
+    if getattr(args, 'e1_manual_stop', False):
+        args.config = folder/'e1_manual_stop_config.yaml'
+        args.config.write_text(yaml.safe_dump(args.e1_manual_stop_config, sort_keys=False))
     session = args.resume_session if resuming else args.prepared_session if prepared else folder/'session'
     is_e2 = (resuming or prepared) and fixed_environment(json.loads((session/'manifest.json').read_text()))
     if retrying:
@@ -632,6 +667,8 @@ def main():
     e.add_argument('--ordered', action='store_true', help='With --one-way, keep configured method order for filming')
     e.add_argument('--stationary-noise', nargs='?', const=30., type=float, metavar='SECONDS',
                    help='Record stationary map-pose noise after Enter, before trials (default when supplied: 30 s, 30 Hz)')
+    e.add_argument('--e1-manual-stop', action='store_true',
+                   help='New E1 session: disable collision prediction and obstacle-cost slowing for trials and positioning; operator holds physical emergency stop')
     e.add_argument('--conditions', nargs='+', choices=['E1', *experiment.SUPPORTED_CONDITIONS[:-1]],
                    help='Default: all E1 conditions; E2 requires the separate map-fixed workflow')
     e.add_argument('--repeats', nargs='+', type=int, choices=range(1, 6),
@@ -655,6 +692,8 @@ def main():
             parser.error('--stationary-noise must be a finite positive number of seconds')
         if (args.retry_trial is not None) != (args.source_session is not None):
             parser.error('--retry-trial and --source-session must be supplied together')
+        if args.e1_manual_stop and (args.prepared_session is not None or args.resume is not None or is_retry(args)):
+            raise ValueError('--e1-manual-stop requires a new E1 session; existing sessions retain their frozen settings')
         if args.prepared_session is not None:
             if any(getattr(args, name) is not None for name in ('map', 'params', 'config', 'conditions', 'repeats')):
                 raise ValueError('--prepared-session uses the saved map and frozen conditions; do not supply input overrides')
@@ -710,6 +749,10 @@ def main():
                 if not value.is_file():
                     raise FileNotFoundError(value)
                 setattr(args, name, value.resolve())
+        if args.e1_manual_stop:
+            args.e1_manual_stop_config = e1_manual_stop_config(args.config, args.conditions)
+            print('実験1・手動非常停止モード: 計測と位置合わせの衝突予測停止・障害物による減速を無効化します。\n'
+                  '走行範囲を監視し、本体の非常停止ボタンを手元に持って実施してください。', flush=True)
         if args.resume is None and not is_retry(args) and args.prepared_session is None:
             source = choose_map(args.workspace, args.map)
     if args.dry_run:
@@ -758,6 +801,8 @@ def main():
         prefix = 'retry' if retrying else ('resume' if resuming else ('start' if prepared else ('lab' if source is None else 'run')))
         folder = new_directory(parent, prefix, getattr(args, 'name', None))
         state = dict(command=args.command, status='starting', folder=str(folder), robot_teleop_handoff=handoff)
+        if getattr(args, 'e1_manual_stop', False):
+            state['obstacle_intervention_policy'] = args.e1_manual_stop_config['obstacle_intervention_policy']
         if resuming:
             state['resume_session'] = str(args.resume_session)
         if prepared:

@@ -16,6 +16,92 @@ sys.path.insert(0, str(ROOT/'scripts'))
 import dwvp_access_workflow as workflow
 
 
+def test_manual_stop_freezes_all_65_trials_and_changes_only_requested_interventions(tmp_path):
+    base = workflow.experiment.default_config()
+    config = workflow.e1_manual_stop_config(None, ['E1'])
+    assert config['conditions']['E2_environment'] == base['conditions']['E2_environment']
+    assert config['common'] == base['common'] and config['trial'] == base['trial']
+    config_file = tmp_path/'manual.yaml'
+    config_file.write_text(yaml.safe_dump(config))
+    template = ROOT/'params/hsrb_dwvp_access_params.yaml'
+    manifest = workflow.experiment.prepare(tmp_path/'session', template, current_start=[0, 0, 0],
+        bidirectional=True, conditions=['E1'], config_file=config_file)
+    assert len(manifest['trials']) == 65
+    for condition in workflow.experiment.E1_CONDITIONS:
+        original = workflow.experiment.render_parameters(template, base, condition)
+        rendered = yaml.safe_load((tmp_path/'session'/manifest['parameter_sets'][condition]['file']).read_text())
+        controllers = set(base['conditions'][condition]['methods']) | {'DWVP'}
+        for name in controllers:
+            for key in ('use_collision_detection', 'use_collision_detection_for_omni',
+                        'use_cost_regulated_linear_velocity_scaling'):
+                assert rendered['controller_server']['ros__parameters'][name][key] is False
+                rendered['controller_server']['ros__parameters'][name][key] = original['controller_server']['ros__parameters'][name][key]
+        # Includes lookahead/time-constant grid, goal criteria, dynamics, sensors and costmaps.
+        assert rendered == original
+    for trial in manifest['trials']:
+        workflow.experiment.load_trial(tmp_path/'session', trial['id'])
+    assert yaml.safe_load((tmp_path/'session/experiment_config.yaml').read_text())['obstacle_intervention_policy']['mode'] == 'e1_operator_emergency_stop'
+
+
+def test_manual_stop_supports_the_optional_fig1_l066_condition(tmp_path):
+    source = ROOT/'params/dwvp_access_fig1.yaml'
+    before = source.read_bytes()
+    selected = ['E1_lateral', 'E1_response_L0p66_T0p5']
+    config = workflow.e1_manual_stop_config(source, selected)
+    config_file = tmp_path/'manual.yaml'
+    config_file.write_text(yaml.safe_dump(config))
+    manifest = workflow.experiment.prepare(tmp_path/'session', ROOT/'params/hsrb_dwvp_access_params.yaml',
+        current_start=[0, 0, 0], conditions=selected, config_file=config_file, repeats=[1], ordered=True)
+    assert [(t['task'], t['controller']) for t in manifest['trials']] == [
+        ('E1_lateral', 'VP_CLIP'), ('E1_response_L0p66_T0p5', 'DWVP')]
+    for trial in manifest['trials']:
+        workflow.experiment.load_trial(tmp_path/'session', trial['id'])
+        params = yaml.safe_load((tmp_path/'session'/trial['params_file']).read_text())
+        ctrl = params['controller_server']['ros__parameters'][trial['controller']]
+        assert ctrl['lookahead_dist'] == .66
+        assert ctrl['use_collision_detection'] is False
+    assert source.read_bytes() == before
+
+
+def test_manual_stop_restricts_conditions_and_does_not_mutate_shared_yaml_aliases(tmp_path):
+    base = workflow.experiment.default_config()
+    overrides = {'DWVP': {'lateral_time_constant': 1.5}}
+    for condition in ('E1_orientation_nominal', 'E2_environment'):
+        base['conditions'][condition]['controller_overrides'] = overrides
+    source = tmp_path/'source.yaml'
+    source.write_text(yaml.safe_dump(base))
+    before = source.read_bytes()
+    profile = workflow.e1_manual_stop_config(source, ['E1_orientation_nominal'])
+    assert source.read_bytes() == before
+    assert profile['conditions']['E2_environment'] == base['conditions']['E2_environment']
+    assert profile['conditions']['E1_orientation_half'] == base['conditions']['E1_orientation_half']
+    assert profile['conditions']['E1_orientation_nominal']['controller_overrides']['DWVP']['lateral_time_constant'] == 1.5
+    with pytest.raises(ValueError, match='E1 conditions only'):
+        workflow.e1_manual_stop_config(None, ['E2_environment'])
+
+
+@pytest.mark.parametrize('previous', [['--resume'], ['--retry-failed'], ['--prepared-session', 'unused'],
+    ['--retry-trial', 'E1_orientation_nominal_DWVP_r1', '--source-session', 'unused']])
+def test_manual_stop_cannot_change_an_existing_session(monkeypatch, tmp_path, previous):
+    monkeypatch.setattr(sys, 'argv', ['workflow', '--workspace', str(tmp_path), 'experiment',
+                                     '--e1-manual-stop', *previous, '--dry-run'])
+    with pytest.raises(ValueError, match='requires a new E1 session'):
+        workflow.main()
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_manual_stop_dry_run_does_not_create_sessions_or_request_motion(monkeypatch, tmp_path, capsys):
+    source = make_map(tmp_path/'maps/lab_test')
+    before = {p: p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
+    monkeypatch.setattr(sys, 'argv', ['workflow', '--workspace', str(tmp_path), 'experiment',
+        '--map', str(source), '--params', str(ROOT/'params/hsrb_dwvp_access_params.yaml'),
+        '--e1-manual-stop', '--dry-run'])
+    monkeypatch.setattr(workflow, 'require_idle', lambda args: pytest.fail('Dry-run must not connect to robot'))
+    workflow.main()
+    assert '手動非常停止モード' in capsys.readouterr().out
+    assert {p: p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()} == before
+
+
 def make_map(folder):
     folder.mkdir(parents=True, exist_ok=True)
     Image.fromarray(np.array([[254,205], [0,254]], dtype=np.uint8)).save(folder/'map.pgm')
@@ -134,12 +220,16 @@ def test_failed_map_save_can_retry_without_restarting_slam(monkeypatch, tmp_path
 
 @pytest.mark.parametrize('fail', [False, True])
 @pytest.mark.parametrize('noise_duration', [None, 2.])
-def test_experiment_handoff_fresh_session_and_failure_cleanup(monkeypatch, tmp_path, fail, noise_duration):
+@pytest.mark.parametrize('manual_stop', [False, True])
+def test_experiment_handoff_fresh_session_and_failure_cleanup(monkeypatch, tmp_path, fail, noise_duration, manual_stop):
     fake_operator(monkeypatch)
     source = make_map(tmp_path/'maps/lab_test')
     folder = tmp_path/'results/dwvp_access/lab_test/run_1'; folder.mkdir(parents=True)
     args = NS(workspace=tmp_path, no_rviz=False, no_joy=False, params=ROOT/'params/hsrb_dwvp_access_params.yaml',
-              config=None, repeats=None, conditions=['E1'], stationary_noise=noise_duration)
+              config=None, repeats=None, conditions=['E1'], stationary_noise=noise_duration,
+              e1_manual_stop=manual_stop)
+    if manual_stop:
+        args.e1_manual_stop_config = workflow.e1_manual_stop_config(None, args.conditions)
     calls = []
     def child(command, logfile, background, timeout=None):
         assert FakeProcess.instances[-1].stopped and not FakeProcess.instances[0].stopped
@@ -149,7 +239,9 @@ def test_experiment_handoff_fresh_session_and_failure_cleanup(monkeypatch, tmp_p
             return
         calls.append(command)
         if 'prepare' in command:
-            workflow.experiment.prepare(folder/'session', args.params, current_start=[0,0,0], bidirectional=True, conditions=['E1'])
+            config_file = Path(command[command.index('--config')+1]) if '--config' in command else None
+            workflow.experiment.prepare(folder/'session', args.params, current_start=[0,0,0],
+                bidirectional=True, conditions=['E1'], config_file=config_file)
         elif fail and '--dry-run' not in command:
             raise RuntimeError('batch failed')
     monkeypatch.setattr(workflow, 'run_child', child)
@@ -165,6 +257,12 @@ def test_experiment_handoff_fresh_session_and_failure_cleanup(monkeypatch, tmp_p
     assert '--continue-on-endpoint-failure' in calls[-1]
     assert '--dry-run' in calls[-2]
     assert (folder/'map/map.pgm').read_bytes() == source.with_suffix('.pgm').read_bytes()
+    config = yaml.safe_load((folder/'session/experiment_config.yaml').read_text())
+    assert ('obstacle_intervention_policy' in config) is manual_stop
+    if manual_stop:
+        assert config == yaml.safe_load((folder/'e1_manual_stop_config.yaml').read_text())
+        params = yaml.safe_load((folder/'session'/manifest['trials'][0]['params_file']).read_text())
+        assert params['controller_server']['ros__parameters']['DWVP']['use_collision_detection'] is False
     assert all(p.stopped for p in FakeProcess.instances)
 
 
