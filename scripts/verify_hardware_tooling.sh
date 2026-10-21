@@ -9,7 +9,7 @@ mkdir -p "$verify_root"
 run_dir=$(mktemp -d "$verify_root/run.XXXXXX")
 image_name=${DWVP_HUMBLE_IMAGE:-docker-hsr:latest}
 printf 'Synthetic verification artifacts: %s\n' "$run_dir"
-simulator_dir=${DWVP_SIMULATOR_ROOT:-$(cd "$package_dir/../../../../../omnidirectional_dwvp" && pwd)}
+simulator_dir=${DWVP_SIMULATOR_ROOT:-$(cd "$package_dir/../../../../../ec_dwvp" && pwd)}
 uv_binary=${DWVP_UV_BINARY:-$(command -v uv)}
 python_dir=$(dirname "$(dirname "$(readlink -f "$simulator_dir/.venv/bin/python")")")
 # Reuse installed, locked dependencies. All simulator and interpreter mounts are
@@ -35,14 +35,14 @@ docker run --rm --network none --user "$(id -u):$(id -g)" \
   -v "$run_dir:/ws" \
   -v "$package_dir:/ws/src/dwpp_test_simulation:ro" \
   -v "$third_party_dir/nav2_dynamic_window_pure_pursuit_controller:/ws/src/nav2_dynamic_window_pure_pursuit_controller:ro" \
-  -v "$third_party_dir/nav2_omnidirectional_dwvp_controller:/ws/src/nav2_omnidirectional_dwvp_controller:ro" \
+  -v "$third_party_dir/nav2_ec_dwvp_controller:/ws/src/nav2_ec_dwvp_controller:ro" \
   -v "$hsr_src_dir/ytlab2_hsr_modules:/ws/src/ytlab2_hsr_modules:ro" \
   -v "$third_party_dir/tmc/hsrb_rosnav/hsrb_mapping:/ws/src/hsrb_mapping:ro" \
   -w /ws "$image_name" -c '
     set -eo pipefail
     source /opt/ros/humble/setup.bash
     colcon build --packages-select nav2_dynamic_window_pure_pursuit_controller \
-      nav2_omnidirectional_dwvp_controller hsrb_mapping ytlab2_hsr_modules dwpp_test_simulation \
+      nav2_ec_dwvp_controller hsrb_mapping ytlab2_hsr_modules dwpp_test_simulation \
       --cmake-args -DBUILD_TESTING=OFF
     source /ws/install/setup.bash
     python3 -m pytest -q -p no:cacheprovider /ws/src/dwpp_test_simulation/tests/test_access_*.py

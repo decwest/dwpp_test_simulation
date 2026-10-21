@@ -717,7 +717,7 @@ Run both entrypoints from their package directories. All builds and validation
 run inside Docker `--network none`, with read-only sources and output under `/tmp`:
 
 ```bash
-# nav2_omnidirectional_dwvp_controller
+# nav2_ec_dwvp_controller
 DWVP_VERIFY_WORKSPACE=$(mktemp -d /tmp/dwvp-plugin-validation.XXXXXX) \
   DWVP_HUMBLE_IMAGE=docker-hsr:latest ./scripts/verify_humble.sh
 # dwpp_test_simulation

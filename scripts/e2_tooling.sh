@@ -19,7 +19,7 @@ if [[ "$command" == test ]]; then
   reference_work=$(mktemp -d "$work/test-reference.XXXXXX")
   reference_dir=/work/$(basename "$reference_work")/reference
   response_reference_dir=/work/$(basename "$reference_work")/response-counterpart
-  simulator_dir=${DWVP_SIMULATOR_ROOT:-$(cd "$package_dir/../../../../../omnidirectional_dwvp" && pwd)}
+  simulator_dir=${DWVP_SIMULATOR_ROOT:-$(cd "$package_dir/../../../../../ec_dwvp" && pwd)}
   uv_binary=${DWVP_UV_BINARY:-$(command -v uv)}
   python_dir=$(dirname "$(dirname "$(readlink -f "$simulator_dir/.venv/bin/python")")")
   docker run --rm --pull=never --network none --user "$(id -u):$(id -g)" --entrypoint bash \
@@ -44,7 +44,7 @@ docker run --rm --pull=never --network none --user "$(id -u):$(id -g)" --entrypo
   -v "$package_dir:/ws/src/dwpp_test_simulation:ro" \
   -v "$third_party_dir/dwb_path_tracking_critics:/ws/src/dwb_path_tracking_critics:ro" \
   -v "$third_party_dir/nav2_dynamic_window_pure_pursuit_controller:/ws/src/nav2_dynamic_window_pure_pursuit_controller:ro" \
-  -v "$third_party_dir/nav2_omnidirectional_dwvp_controller:/ws/src/nav2_omnidirectional_dwvp_controller:ro" \
+  -v "$third_party_dir/nav2_ec_dwvp_controller:/ws/src/nav2_ec_dwvp_controller:ro" \
   -v "$hsr_src_dir/ytlab2_hsr_modules:/ws/src/ytlab2_hsr_modules:ro" \
   -w /ws "$image_name" -c '
     set -eo pipefail
@@ -59,7 +59,7 @@ docker run --rm --pull=never --network none --user "$(id -u):$(id -g)" --entrypo
       colcon build --packages-select dwb_path_tracking_critics \
         --cmake-args -DBUILD_TESTING=ON -DCMAKE_BUILD_TYPE=Release
       colcon build --packages-select nav2_dynamic_window_pure_pursuit_controller \
-        nav2_omnidirectional_dwvp_controller ytlab2_hsr_modules dwpp_test_simulation \
+        nav2_ec_dwvp_controller ytlab2_hsr_modules dwpp_test_simulation \
         --cmake-args -DBUILD_TESTING=OFF
       exit
     fi

@@ -67,7 +67,7 @@ controller_server:
       cost_scaling_dist: 0.6
       cost_scaling_gain: 1.0
       inflation_cost_scaling_factor: 3.0
-      wrapped_plugin: nav2_omnidirectional_dwvp_controller::OmnidirectionalDWVPController
+      wrapped_plugin: nav2_ec_dwvp_controller::ECDWVPController
     progress_checker_plugin: progress_checker
     RPP:
       plugin: dwpp_test_simulation::TimedController
@@ -192,7 +192,7 @@ controller_server:
       cost_scaling_dist: 0.6
       cost_scaling_gain: 1.0
       inflation_cost_scaling_factor: 3.0
-      wrapped_plugin: nav2_omnidirectional_dwvp_controller::OmnidirectionalDWVPController
+      wrapped_plugin: nav2_ec_dwvp_controller::ECDWVPController
     VP_SCALED:
       plugin: dwpp_test_simulation::TimedController
       transform_tolerance: 0.1
@@ -214,7 +214,7 @@ controller_server:
       cost_scaling_dist: 0.6
       cost_scaling_gain: 1.0
       inflation_cost_scaling_factor: 3.0
-      wrapped_plugin: nav2_omnidirectional_dwvp_controller::OmnidirectionalDWVPController
+      wrapped_plugin: nav2_ec_dwvp_controller::ECDWVPController
     DWB:
       # HSR revision 2026-10-07: model acceleration during the prediction.
       # First-step output remains acceleration-limited at the control period.

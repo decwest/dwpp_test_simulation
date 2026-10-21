@@ -33,10 +33,10 @@ def write_csv(path, rows):
 
 
 def simulate_session(session, output, *, include_planned=False):
-    from omnidirectional_dwvp.config import Config
-    from omnidirectional_dwvp.simulation import simulate
-    from omnidirectional_dwvp.access_v3_metrics import fitted_time_constant
-    import omnidirectional_dwvp.config as simulator_module
+    from ec_dwvp.config import Config
+    from ec_dwvp.simulation import simulate
+    from ec_dwvp.access_v3_metrics import fitted_time_constant
+    import ec_dwvp.config as simulator_module
 
     session, output = Path(session).resolve(), Path(output).resolve()
     if output == session or session in output.parents:
